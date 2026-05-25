@@ -1,0 +1,4 @@
+1. loss修正。调整loss参数权重（或者动态权重策略），或者引入新的loss函数。
+2. 考虑将mask引入forward流程。用mask去规范化latent得到的envlight和flashligght。其中flashlight可以做一个mask为中心向外衰减的分布图。构建一个简单的decaynet，输出空间的衰减分布。
+3. 输入输出替换为linear rgb或者xyz，在线性空间操作，物理意义更明确。
+3. 替换restormer的主干网络，换用其他更适合的结构

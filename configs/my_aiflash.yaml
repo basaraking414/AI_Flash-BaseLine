@@ -46,7 +46,7 @@ datasets:
 
 # network structures
 network_g:
-  type: Restormer_AIFlash  # 修改模型类型为 Restormer_AIFlash，在archs中定义新的模型结构
+  type: Restormer_AIFlash_mask_attention  # 使用带 mask attention 的版本，支持 alpha 控制
   inp_channels: 3
   out_channels: 3
   dim: 16 
@@ -118,6 +118,16 @@ train:
     range_norm: false
     loss_weight: 0.2
 
+  # 新增: 可控闪光强度 - alpha 采样
+  alpha_sampling: true
+
+  # 新增: 输入重建损失 (L_input_recon)
+  input_recon_opt:
+    type: CharbonnierLoss
+    loss_weight: 0.5
+    reduction: mean
+    eps: !!float 1e-3
+
 # validation settings
 val:
   window_size: 8
@@ -132,6 +142,8 @@ val:
       type: calculate_psnr
       crop_border: 0
       test_y_channel: false
+    deltaE:
+      type: calculate_deltaE
 
 # logging settings
 logger:

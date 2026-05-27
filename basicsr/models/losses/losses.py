@@ -74,8 +74,9 @@ class FaceLabLoss(nn.Module):
             pixel_num = torch.sum(mask)
 
             if pixel_num == 0:
-                loss = torch.tensor(1e-8).to(pred.device)
-                return loss
+                # 返回零损失（带梯度），避免异常值
+                loss = torch.tensor(0.0).to(pred.device).requires_grad_(True)
+                return self.loss_weight * loss
             else:
                 diff_L = (pred_L - tgt_L)/100
                 diff_a = (pred_a - tgt_a)/128
@@ -419,8 +420,9 @@ class PerceptualLoss(nn.Module):
         pixel_num = torch.sum(valid_mask)
 
         if pixel_num == 0:
-            loss = torch.tensor(1e-8).to(x.device)
-            return loss
+            # 返回零损失（带梯度），避免异常值
+            loss = torch.tensor(0.0).to(x.device).requires_grad_(True)
+            return self.loss_weight * loss
 
         for name, module in self.vgg_layers.named_children():
             x_features = module(x_features)
@@ -446,6 +448,30 @@ class PerceptualLoss(nn.Module):
                     loss += self.layer_weights[layer_name] * layer_loss
         
         return self.loss_weight * loss
+
+class TVSmoothLoss(nn.Module):
+    """Total Variation Smoothness Loss for spatial env_light regularization.
+
+    Encourages spatial smoothness of environmental illumination map,
+    since ambient light is inherently low-frequency.
+
+    Args:
+        loss_weight (float): Loss weight. Default: 0.1.
+    """
+
+    def __init__(self, loss_weight=0.1):
+        super(TVSmoothLoss, self).__init__()
+        self.loss_weight = loss_weight
+
+    def forward(self, x):
+        """
+        Args:
+            x (Tensor): Environmental light map of shape (B, C, H, W).
+        """
+        tv_h = torch.abs(x[:, :, 1:, :] - x[:, :, :-1, :]).mean()
+        tv_w = torch.abs(x[:, :, :, 1:] - x[:, :, :, :-1]).mean()
+        return self.loss_weight * (tv_h + tv_w)
+
 
 class GTMeanLoss(nn.Module):
     """GT-Mean Loss for tackling brightness mismatch."""

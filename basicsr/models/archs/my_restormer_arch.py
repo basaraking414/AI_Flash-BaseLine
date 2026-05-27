@@ -189,20 +189,30 @@ class Upsample(nn.Module):
     def forward(self, x):
         return self.body(x)
 
-class EnvLightHead(nn.Module):   #增加环境背景光源估计模块
-    def __init__(self, in_dim):
+class EnvLightHead(nn.Module):   #环境背景光源估计模块（空间分布版本）
+    def __init__(self, in_dim, kernel_size=15, sigma=5.0):
         super().__init__()
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Conv2d(in_dim, in_dim, 1),
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_dim, in_dim, 3, 1, 1),
             nn.ReLU(),
-            nn.Conv2d(in_dim, 3, 1)   # RGB illumination
+            nn.Conv2d(in_dim, 3, 1)
         )
+        self.kernel_size = kernel_size
+        self.register_buffer('gaussian_kernel',
+                             self._make_gaussian_kernel(kernel_size, sigma))
+
+    @staticmethod
+    def _make_gaussian_kernel(k, sigma):
+        ax = torch.arange(k, dtype=torch.float32) - k // 2
+        xx, yy = torch.meshgrid(ax, ax, indexing='ij')
+        kernel = torch.exp(-(xx**2 + yy**2) / (2 * sigma**2))
+        return (kernel / kernel.sum()).unsqueeze(0).unsqueeze(0)
 
     def forward(self, x):
-        x = self.pool(x)
-        env_light = self.fc(x)
-        return env_light
+        logits = self.conv(x)
+        b, c, h, w = logits.shape
+        kernel = self.gaussian_kernel.expand(c, 1, -1, -1)
+        return F.conv2d(logits, kernel, padding=self.kernel_size // 2, groups=c)
 
 class FlashLightHead(nn.Module):   #增加闪光灯光照强度估计模块
     def __init__(self, in_dim):
@@ -530,9 +540,9 @@ class Restormer_AIFlash_mask_attention(nn.Module):
 
         self.output = nn.Conv2d(int(dim * 2 ** 1), out_channels, kernel_size=3, stride=1, padding=1, bias=bias)
 
-    def forward(self, inp_img, mask):
-        s=inp_img
-        # inp_img = srgb_to_linear(inp_img)
+    def forward(self, inp_img, mask, alpha=1.0):
+        s = inp_img
+        inp_img = srgb_to_linear(inp_img)
 
         inp_enc_level1 = self.patch_embed(inp_img)
         out_enc_level1 = self.encoder_level1(inp_enc_level1)
@@ -562,39 +572,40 @@ class Restormer_AIFlash_mask_attention(nn.Module):
 
         out_dec_level1 = self.refinement(out_dec_level1)
 
-        #### For Dual-Pixel Defocus Deblurring Task ####
         if self.dual_pixel_task:
             out_dec_level1 = out_dec_level1 + self.skip_conv(inp_enc_level1)
             out_dec_level1 = self.output(out_dec_level1)
-        ###########################
         else:
             out_dec_level1 = self.output(out_dec_level1)
 
         reflectance = torch.sigmoid(out_dec_level1)
 
-        env_light = self.env_head(latent)  # (B,3,1,1)  估计环境光
+        env_light_logits = self.env_head(latent)  # (B,3,H/16,W/16)
+        env_light = 0.9 * torch.sigmoid(env_light_logits)
+        env_light_img = F.interpolate(env_light, size=reflectance.shape[-2:], mode='bilinear', align_corners=False)
 
         flash_logits = self.flash_head(latent, mask, getattr(self, 'mask_pool', None))
         flash_map = torch.sigmoid(F.interpolate(flash_logits, size=reflectance.shape[-2:], mode='bilinear', align_corners=False))
 
-        env_light = 0.9 * torch.sigmoid(env_light)
-        env_light_img = env_light.expand_as(reflectance)
-
-        soft_mask = 0.9 * mask + 0.1 # 仍使用你的 soft mask，已 resize
+        soft_mask = 0.9 * mask + 0.1
         flash_map = flash_map * soft_mask
 
-        illumination = env_light_img + flash_map
+        # 改动1: 光照组合加入 alpha
+        illumination = env_light_img + alpha * flash_map
 
         out_img = reflectance * illumination
+        out_img = linear_to_srgb(out_img)
 
-        # out_img = linear_to_srgb(out_img)
+        # 改动2: 存储中间张量为模型属性（供训练代码访问）
+        self._intermediate = {
+            'reflectance': reflectance,
+            'env_light': env_light_img,
+            'flash_map': flash_map,
+            'alpha': alpha,
+            'illumination': illumination,
+        }
 
-        # result = torch.cat([s,reflectance, illumination, out_img], dim=-1)
-        # visualize_tensor(result)
-        # visualize_tensor(env_light_img)
-        # visualize_tensor(flash_map)
-        # visualize_tensor(illumination)
-        # visualize_tensor(out_img)
+        # 改动3: 返回值不变，保持完全向后兼容
         return out_img
 
 def srgb_to_linear(x):

@@ -1,7 +1,9 @@
 import argparse
 import datetime
+import json
 import logging
 import math
+import os
 import random
 import time
 import torch
@@ -137,7 +139,6 @@ def main():
 
     # automatic resume ..
     state_folder_path = 'experiments/{}/training_states/'.format(opt['name'])
-    import os
     try:
         states = os.listdir(state_folder_path)
     except:
@@ -186,6 +187,14 @@ def main():
         start_epoch = 0
         current_iter = 0
 
+    # Early stopping state
+    best_psnr = -float('inf')
+    best_deltaE = float('inf')
+    best_psnr_iter = 0
+    best_deltaE_iter = 0
+    patience_counter = 0
+    patience = opt['train'].get('earlystop_patience', 12)
+
     # create message logger (formatted outputs)
     msg_logger = MessageLogger(opt, current_iter, tb_logger)
 
@@ -222,36 +231,10 @@ def main():
 
     scale = opt['scale']
 
-    # 冻结除环境编码器和闪烁模块以外的所有参数
-    for name, param in model.net_g.named_parameters():
-
-        if "env" in name or "flash" in name:
-            param.requires_grad = True
-            print("Train:", name)
-        elif "refinement" in name  or "output" in name :
-            param.requires_grad = True
-            print("Train:", name)
-        else:
-            param.requires_grad = False
-            # print("Freeze:", name)
-
-    # 修改优化器，只优化环境编码器和闪烁模块的参数
-    trainable_params = []
-
-    for p in model.net_g.parameters():
-        if p.requires_grad:
-            trainable_params.append(p)
-
-    optimizer = torch.optim.AdamW(
-        trainable_params,
-        lr=5e-5,
-        betas=(0.9, 0.999)
-    )
-    model.optimizer_g = optimizer
-    model.optimizers = [optimizer]
     model.schedulers = []
 
     epoch = start_epoch
+    early_stopped = False
     while current_iter <= total_iters:
         train_sampler.set_epoch(epoch)
         prefetcher.reset()
@@ -324,13 +307,62 @@ def main():
                 rgb2bgr = opt['val'].get('rgb2bgr', True)
                 # wheather use uint8 image to compute metrics
                 use_image = opt['val'].get('use_image', True)
-                model.validation(val_loader, current_iter, tb_logger,
-                                 opt['val']['save_img'], rgb2bgr, use_image)
+                current_metric, val_loss_dict = model.validation(
+                    val_loader, current_iter, tb_logger,
+                    opt['val']['save_img'], rgb2bgr, use_image)
+
+                # Record val loss for plotting
+                model.record_val_loss(val_loss_dict, current_iter)
+
+                # Early stopping check
+                psnr = model.metric_results.get('psnr', -float('inf'))
+                delta_e = model.metric_results.get('deltaE', float('inf'))
+
+                improved = False
+                if psnr > best_psnr:
+                    best_psnr = psnr
+                    best_psnr_iter = current_iter
+                    improved = True
+                if delta_e < best_deltaE:
+                    best_deltaE = delta_e
+                    best_deltaE_iter = current_iter
+                    improved = True
+
+                if improved:
+                    patience_counter = 0
+                    # Save best model
+                    best_net_path = os.path.join(opt['path']['models'], 'best_net_g.pth')
+                    torch.save({'params': model.net_g.state_dict()}, best_net_path)
+                    # Save best metrics (per-metric best iter)
+                    best_metrics = {
+                        'best_psnr': float(best_psnr),
+                        'best_psnr_iter': int(best_psnr_iter),
+                        'best_deltaE': float(best_deltaE),
+                        'best_deltaE_iter': int(best_deltaE_iter),
+                    }
+                    with open(os.path.join(opt['path']['models'], 'best_metrics.json'), 'w') as f:
+                        json.dump(best_metrics, f, indent=2)
+                    logger.info(f'Best model saved at iter {current_iter}: PSNR={best_psnr:.4f}, deltaE={best_deltaE:.4f}')
+                else:
+                    patience_counter += 1
+                    logger.info(f'No improvement for {patience_counter}/{patience} validations')
+                    if patience_counter >= patience:
+                        logger.info(f'Early stopping triggered at iter {current_iter}')
+                        early_stopped = True
+
+                # Plot loss curves after validation (always, even on early stop)
+                model._save_loss_curves(current_iter)
+
+                if early_stopped:
+                    break
 
             data_time = time.time()
             iter_time = time.time()
             train_data = prefetcher.next()
         # end of iter
+        model.end_epoch(current_iter)
+        if early_stopped:
+            break
         epoch += 1
 
     # end of epoch
@@ -342,7 +374,9 @@ def main():
     model.save(epoch=-1, current_iter=-1)  # -1 stands for the latest
     if opt.get('val') is not None:
         model.validation(val_loader, current_iter, tb_logger,
-                         opt['val']['save_img'])
+                         opt['val']['save_img'],
+                         opt['val'].get('rgb2bgr', True),
+                         opt['val'].get('use_image', True))
     if tb_logger:
         tb_logger.close()
 

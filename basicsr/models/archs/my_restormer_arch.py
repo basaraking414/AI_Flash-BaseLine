@@ -189,20 +189,30 @@ class Upsample(nn.Module):
     def forward(self, x):
         return self.body(x)
 
-class EnvLightHead(nn.Module):   #增加环境背景光源估计模块
-    def __init__(self, in_dim):
+class EnvLightHead(nn.Module):   #环境背景光源估计模块（空间分布版本）
+    def __init__(self, in_dim, kernel_size=15, sigma=5.0):
         super().__init__()
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Conv2d(in_dim, in_dim, 1),
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_dim, in_dim, 3, 1, 1),
             nn.ReLU(),
-            nn.Conv2d(in_dim, 3, 1)   # RGB illumination
+            nn.Conv2d(in_dim, 3, 1)
         )
+        self.kernel_size = kernel_size
+        self.register_buffer('gaussian_kernel',
+                             self._make_gaussian_kernel(kernel_size, sigma))
+
+    @staticmethod
+    def _make_gaussian_kernel(k, sigma):
+        ax = torch.arange(k, dtype=torch.float32) - k // 2
+        xx, yy = torch.meshgrid(ax, ax, indexing='ij')
+        kernel = torch.exp(-(xx**2 + yy**2) / (2 * sigma**2))
+        return (kernel / kernel.sum()).unsqueeze(0).unsqueeze(0)
 
     def forward(self, x):
-        x = self.pool(x)
-        env_light = self.fc(x)
-        return env_light
+        logits = self.conv(x)
+        b, c, h, w = logits.shape
+        kernel = self.gaussian_kernel.expand(c, 1, -1, -1)
+        return F.conv2d(logits, kernel, padding=self.kernel_size // 2, groups=c)
 
 class FlashLightHead(nn.Module):   #增加闪光灯光照强度估计模块
     def __init__(self, in_dim):
@@ -530,9 +540,9 @@ class Restormer_AIFlash_mask_attention(nn.Module):
 
         self.output = nn.Conv2d(int(dim * 2 ** 1), out_channels, kernel_size=3, stride=1, padding=1, bias=bias)
 
-    def forward(self, inp_img, mask):
-        s=inp_img
-        # inp_img = srgb_to_linear(inp_img)
+    def forward(self, inp_img, mask, alpha=1.0):
+        s = inp_img
+        inp_img = srgb_to_linear(inp_img)
 
         inp_enc_level1 = self.patch_embed(inp_img)
         out_enc_level1 = self.encoder_level1(inp_enc_level1)
@@ -562,39 +572,40 @@ class Restormer_AIFlash_mask_attention(nn.Module):
 
         out_dec_level1 = self.refinement(out_dec_level1)
 
-        #### For Dual-Pixel Defocus Deblurring Task ####
         if self.dual_pixel_task:
             out_dec_level1 = out_dec_level1 + self.skip_conv(inp_enc_level1)
             out_dec_level1 = self.output(out_dec_level1)
-        ###########################
         else:
             out_dec_level1 = self.output(out_dec_level1)
 
         reflectance = torch.sigmoid(out_dec_level1)
 
-        env_light = self.env_head(latent)  # (B,3,1,1)  估计环境光
+        env_light_logits = self.env_head(latent)  # (B,3,H/16,W/16)
+        env_light = 0.9 * torch.sigmoid(env_light_logits)
+        env_light_img = F.interpolate(env_light, size=reflectance.shape[-2:], mode='bilinear', align_corners=False)
 
         flash_logits = self.flash_head(latent, mask, getattr(self, 'mask_pool', None))
         flash_map = torch.sigmoid(F.interpolate(flash_logits, size=reflectance.shape[-2:], mode='bilinear', align_corners=False))
 
-        env_light = 0.9 * torch.sigmoid(env_light)
-        env_light_img = env_light.expand_as(reflectance)
-
-        soft_mask = 0.9 * mask + 0.1 # 仍使用你的 soft mask，已 resize
+        soft_mask = 0.9 * mask + 0.1
         flash_map = flash_map * soft_mask
 
-        illumination = env_light_img + flash_map
+        # 改动1: 光照组合加入 alpha
+        illumination = env_light_img + alpha * flash_map
 
         out_img = reflectance * illumination
+        out_img = linear_to_srgb(out_img)
 
-        # out_img = linear_to_srgb(out_img)
+        # 改动2: 存储中间张量为模型属性（供训练代码访问）
+        self._intermediate = {
+            'reflectance': reflectance,
+            'env_light': env_light_img,
+            'flash_map': flash_map,
+            'alpha': alpha,
+            'illumination': illumination,
+        }
 
-        # result = torch.cat([s,reflectance, illumination, out_img], dim=-1)
-        # visualize_tensor(result)
-        # visualize_tensor(env_light_img)
-        # visualize_tensor(flash_map)
-        # visualize_tensor(illumination)
-        # visualize_tensor(out_img)
+        # 改动3: 返回值不变，保持完全向后兼容
         return out_img
 
 def srgb_to_linear(x):
@@ -610,81 +621,4 @@ def linear_to_srgb(x):
         x * 12.92,
         1.055 * torch.pow(x, 1/2.4) - 0.055
     )
-
-
-import torch
-import numpy as np
-import matplotlib
-matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
-from torchvision import transforms
-def visualize_tensor(tensor, title=None, save_path=None):
-    """
-    将PyTorch Tensor转换为图像并显示
-
-    参数:
-    - tensor (torch.Tensor): 需要可视化的Tensor，支持以下格式:
-        * (C, H, W) - 无批量维度的单张图像
-        * (B, C, H, W) - 带批量维度的多张图像
-        * (H, W, C) - 通道在最后的格式
-    - title (str, 可选): 图像标题
-    - save_path (str, 可选): 保存图像的路径，若为None则不保存
-
-    返回:
-    - None
-    """
-    # 确保Tensor在CPU上
-    if tensor.is_cuda:
-        tensor = tensor.cpu()
-
-    # 克隆Tensor避免修改原始数据
-    tensor = tensor.detach().clone()
-
-    # 处理批量维度: 选择第一张图像或移除单例批量维度
-    if tensor.dim() == 4:
-        tensor = tensor[0]  # 选择批量中的第一张图像
-
-    # 确保维度顺序为(C, H, W)
-    if tensor.shape[0] in [1, 3]:  # 如果第一个维度是通道数
-        tensor = tensor.permute(1, 2, 0)  # 从(H, W, C)转为(C, H, W)
-
-    # 处理单通道情况
-    if tensor.shape[0] == 1:
-        tensor = tensor.squeeze(0)  # 移除通道维度
-        is_grayscale = True
-    else:
-        is_grayscale = False
-
-    # 转换为numpy数组并调整值范围
-    tensor_np = tensor.numpy()
-
-    # 检查值范围并调整到[0, 1]或[0, 255]
-    if tensor_np.max() > 1.0:
-        tensor_np = np.clip(tensor_np,0,1)
-    elif tensor_np.min() < 0:
-        tensor_np = (tensor_np - tensor_np.min()) / (tensor_np.max() - tensor_np.min())
-
-    # 显示图像
-    plt.ion()
-    plt.figure(figsize=(10, 8))
-    if is_grayscale:
-        plt.imshow(tensor_np, cmap='gray')
-    else:
-        plt.imshow(tensor_np)
-    plt.draw()  # 强制刷新
-    plt.pause(0.1)
-    plt.axis('off')
-
-    if title:
-        plt.title(title)
-
-    plt.tight_layout()
-    plt.show()
-
-    # 保存图像（如果指定路径）
-    if save_path:
-        if is_grayscale:
-            plt.imsave(save_path, tensor_np, cmap='gray')
-        else:
-            plt.imsave(save_path, tensor_np)
 

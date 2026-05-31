@@ -132,8 +132,8 @@ train:
 # validation settings
 val:
   window_size: 8
-  val_freq: !!float 5e3 # 每 5000 次迭代验证一次
-  save_img: true        # 开启保存图片 (代码里已限制只存前10张)
+  val_freq: !!float 5500 # 每 5000 次迭代验证一次
+  save_img: true        # 开启保存图片
   rgb2bgr: true
   use_image: false
   max_minibatch: 8
@@ -154,7 +154,7 @@ val:
 # logging settings
 logger:
   print_freq: 100
-  save_checkpoint_freq: !!float 5e3
+  save_checkpoint_freq: !!float 5500
   use_tb_logger: true   # 开启 TensorBoard
   wandb:
     project: ~ # 设置 WandB 项目名称

@@ -14,6 +14,7 @@ from basicsr.visualize import visualize_intermediates
 loss_module = importlib.import_module('basicsr.models.losses')
 metric_module = importlib.import_module('basicsr.metrics')
 
+import json
 import os
 import random
 import numpy as np
@@ -649,3 +650,13 @@ class AIFlashModel(BaseModel):
         else:
             self.save_network(self.net_g, 'net_g', current_iter)
         self.save_training_state(epoch, current_iter)
+        # 保存 loss 历史（用于恢复训练后继续绘制损失曲线）
+        if current_iter != -1:
+            loss_state = {
+                'loss_history': self.loss_history,
+                'val_loss_history': self.val_loss_history,
+            }
+            loss_state_path = os.path.join(
+                self.opt['path']['training_states'], f'{current_iter}_loss_history.json')
+            with open(loss_state_path, 'w') as f:
+                json.dump(loss_state, f)

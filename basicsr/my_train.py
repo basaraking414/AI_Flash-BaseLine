@@ -178,6 +178,16 @@ def main():
         check_resume(opt, resume_state['iter'])
         model = create_model(opt)
         model.resume_training(resume_state)  # handle optimizers and schedulers
+        # 恢复 loss 历史
+        loss_history_path = os.path.join(
+            opt['path']['training_states'],
+            f"{resume_state['iter']}_loss_history.json")
+        if os.path.exists(loss_history_path):
+            with open(loss_history_path, 'r') as f:
+                loss_state = json.load(f)
+            model.loss_history = loss_state.get('loss_history', {})
+            model.val_loss_history = loss_state.get('val_loss_history', {})
+            logger.info(f'Restored loss history from iter {resume_state["iter"]}')
         logger.info(f"Resuming training from epoch: {resume_state['epoch']}, "
                     f"iter: {resume_state['iter']}.")
         start_epoch = resume_state['epoch']
@@ -188,13 +198,25 @@ def main():
         current_iter = 0
 
     # Best metric tracking（各指标独立记录最佳 epoch/iter）
-    best_psnr = -float('inf')
-    best_psnr_epoch = 0
-    best_psnr_iter = 0
-    best_deltaE = float('inf')
-    best_deltaE_epoch = 0
-    best_deltaE_iter = 0
     best_metrics_path = os.path.join(opt['path']['models'], 'best_metrics.json')
+    if os.path.exists(best_metrics_path):
+        with open(best_metrics_path, 'r') as f:
+            best_metrics = json.load(f)
+        best_psnr = best_metrics['best_psnr']['value']
+        best_psnr_epoch = best_metrics['best_psnr']['epoch']
+        best_psnr_iter = best_metrics['best_psnr']['iter']
+        best_deltaE = best_metrics['best_deltaE']['value']
+        best_deltaE_epoch = best_metrics['best_deltaE']['epoch']
+        best_deltaE_iter = best_metrics['best_deltaE']['iter']
+        logger.info(f'Loaded best metrics: PSNR={best_psnr:.4f} (epoch {best_psnr_epoch}), '
+                    f'deltaE={best_deltaE:.4f} (epoch {best_deltaE_epoch})')
+    else:
+        best_psnr = -float('inf')
+        best_psnr_epoch = 0
+        best_psnr_iter = 0
+        best_deltaE = float('inf')
+        best_deltaE_epoch = 0
+        best_deltaE_iter = 0
 
     # create message logger (formatted outputs)
     msg_logger = MessageLogger(opt, current_iter, tb_logger)
@@ -232,6 +254,8 @@ def main():
 
     scale = opt['scale']
 
+    resume_iter = resume_state['iter'] if resume_state else 0
+
     epoch = start_epoch
     while current_iter <= total_iters:
         train_sampler.set_epoch(epoch)
@@ -244,6 +268,10 @@ def main():
             current_iter += 1
             if current_iter > total_iters:
                 break
+            # 恢复训练时跳过已见数据
+            if current_iter <= resume_iter:
+                train_data = prefetcher.next()
+                continue
             # update learning rate
             model.update_learning_rate(
                 current_iter, warmup_iter=opt['train'].get('warmup_iter', -1))
@@ -299,20 +327,16 @@ def main():
                 logger.info('Saving models and training states.')
                 model.save(epoch, current_iter)
 
-            # validation
-            if opt.get('val') is not None and (current_iter %
-                                               opt['val']['val_freq'] == 0):
+            # validation（iter 级别触发）
+            if opt.get('val') is not None and (current_iter % opt['val']['val_freq'] == 0):
                 rgb2bgr = opt['val'].get('rgb2bgr', True)
-                # wheather use uint8 image to compute metrics
                 use_image = opt['val'].get('use_image', True)
                 current_metric, val_loss_dict = model.validation(
                     val_loader, current_iter, tb_logger,
                     opt['val']['save_img'], rgb2bgr, use_image)
 
-                # Record val loss for plotting
                 model.record_val_loss(val_loss_dict, epoch)
 
-                # Best model tracking（各指标独立保存权重和记录）
                 psnr = model.metric_results.get('psnr', -float('inf'))
                 delta_e = model.metric_results.get('deltaE', float('inf'))
 
@@ -347,7 +371,6 @@ def main():
                 with open(best_metrics_path, 'w') as f:
                     json.dump(best_metrics, f, indent=2)
 
-                # Plot loss curves after validation
                 model._save_loss_curves(epoch)
 
             data_time = time.time()

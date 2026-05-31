@@ -189,7 +189,6 @@ class AIFlashModel(BaseModel):
         self.val_loss_history = {}
         self.epoch_loss_sum = {}
         self.epoch_loss_count = 0
-        self.vis_freq = train_opt.get('vis_freq', 5000)
 
     def setup_optimizers(self):
         train_opt = self.opt['train']
@@ -329,19 +328,7 @@ class AIFlashModel(BaseModel):
             self.epoch_loss_sum[k] = self.epoch_loss_sum.get(k, 0) + (v.item() if torch.is_tensor(v) else v)
         self.epoch_loss_count += 1
 
-        # 定期可视化中间张量
-        if current_iter % self.vis_freq == 0 and hasattr(self.net_g, '_intermediate'):
-            vis_dir = os.path.join(self.opt['path']['experiments_root'], 'visualizations')
-            visualize_intermediates(
-                self.net_g._intermediate,
-                save_dir=vis_dir,
-                iter_num=current_iter,
-                prefix=f'iter{current_iter}_'
-            )
-            logger = get_root_logger()
-            logger.info(f'Saved intermediate visualizations at iter {current_iter}')
-
-    def _save_loss_curves(self, current_iter):
+    def _save_loss_curves(self, current_epoch):
         """绘制并保存损失曲线（Train 细线 + Val 粗线+标记点）"""
         import matplotlib
         matplotlib.use('Agg')
@@ -363,7 +350,7 @@ class AIFlashModel(BaseModel):
         if 'val_l_pix' in self.val_loss_history:
             data = self.val_loss_history['val_l_pix']
             ax.plot(data['steps'], data['values'], 'r-o', linewidth=2, markersize=5, label='val l_pix')
-        ax.set_xlabel('Iteration')
+        ax.set_xlabel('Epoch')
         ax.set_ylabel('Loss')
         ax.set_title('Pixel Loss (l_pix)')
         ax.legend()
@@ -386,14 +373,14 @@ class AIFlashModel(BaseModel):
             if val_key in self.val_loss_history:
                 data = self.val_loss_history[val_key]
                 ax.plot(data['steps'], data['values'], '-o', color=color, linewidth=2, markersize=5, label=val_key)
-        ax.set_xlabel('Iteration')
+        ax.set_xlabel('Epoch')
         ax.set_ylabel('Loss')
         ax.set_title('Other Losses')
         ax.legend()
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        save_path = os.path.join(save_dir, f'loss_curve_{current_iter:06d}.png')
+        save_path = os.path.join(save_dir, f'loss_curve_epoch_{current_epoch:04d}.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
 
         # 保存最新的一张作为 overview（必须在 close 之前）
@@ -402,18 +389,18 @@ class AIFlashModel(BaseModel):
         plt.close()
 
         logger = get_root_logger()
-        logger.info(f'Saved loss curves at iter {current_iter}')
+        logger.info(f'Saved loss curves at epoch {current_epoch}')
 
-    def record_val_loss(self, val_loss_dict, current_iter):
+    def record_val_loss(self, val_loss_dict, current_epoch):
         """记录 validation loss 用于绘制曲线"""
         for k, v in val_loss_dict.items():
             key = f'val_{k}'
             if key not in self.val_loss_history:
                 self.val_loss_history[key] = {'steps': [], 'values': []}
-            self.val_loss_history[key]['steps'].append(current_iter)
+            self.val_loss_history[key]['steps'].append(current_epoch)
             self.val_loss_history[key]['values'].append(v)
 
-    def end_epoch(self, current_iter):
+    def end_epoch(self, current_epoch):
         """epoch 结束时，将累积的 loss 取均值记录到 loss_history"""
         if self.epoch_loss_count == 0:
             return
@@ -421,7 +408,7 @@ class AIFlashModel(BaseModel):
             avg = v / self.epoch_loss_count
             if k not in self.loss_history:
                 self.loss_history[k] = {'steps': [], 'values': []}
-            self.loss_history[k]['steps'].append(current_iter)
+            self.loss_history[k]['steps'].append(current_epoch)
             self.loss_history[k]['values'].append(avg)
         self.epoch_loss_sum = {}
         self.epoch_loss_count = 0
@@ -451,14 +438,14 @@ class AIFlashModel(BaseModel):
         if hasattr(self, 'net_g_ema'):
             self.net_g_ema.eval()
             with torch.no_grad():
-                pred = self.net_g_ema(img,mask)
+                pred = self.net_g_ema(img, mask, alpha=1.0)
             if isinstance(pred, list):
                 pred = pred[-1]
             self.output = pred
         else:
             self.net_g.eval()
             with torch.no_grad():
-                pred = self.net_g(img,mask)
+                pred = self.net_g(img, mask, alpha=1.0)
             if isinstance(pred, list):
                 pred = pred[-1]
             self.output = pred
@@ -479,6 +466,21 @@ class AIFlashModel(BaseModel):
             l_pix = self.cri_pix(self.output, self.gt, self.mask)
             losses['l_pix'] = l_pix.item()
             l_total += l_pix.item()
+
+        if self.cri_illum:
+            l_illum = self.cri_illum(self.output, self.gt, self.mask)
+            losses['l_illum'] = l_illum.item()
+            l_total += l_illum.item()
+
+        if self.cri_grad:
+            l_grad = self.cri_grad(self.output, self.gt)
+            losses['l_grad'] = l_grad.item()
+            l_total += l_grad.item()
+
+        if self.cri_perceptual:
+            l_percep = self.cri_perceptual(self.output, self.gt, self.mask)
+            losses['l_percep'] = l_percep.item()
+            l_total += l_percep.item()
 
         if self.cri_input_recon and hasattr(self.net_g, '_intermediate'):
             inter = self.net_g._intermediate
@@ -543,9 +545,10 @@ class AIFlashModel(BaseModel):
             del self.output
             torch.cuda.empty_cache()
 
+            max_vis_images = self.opt['val'].get('max_vis_images', 10)
+
             if save_img:
-                # 只保存随机的10张，或者前10张
-                if cnt < 10:
+                if cnt < max_vis_images:
                     if self.opt['is_train']:
 
                         save_img_path = osp.join(self.opt['path']['visualization'],
@@ -566,6 +569,16 @@ class AIFlashModel(BaseModel):
 
                     imwrite(sr_img, save_img_path)
                     imwrite(gt_img, save_gt_img_path)
+
+                # 中间张量可视化（R, E, F, illumination）
+                if cnt < max_vis_images and hasattr(self.net_g, '_intermediate'):
+                    vis_dir = os.path.join(self.opt['path']['experiments_root'], 'val_visualizations')
+                    visualize_intermediates(
+                        self.net_g._intermediate,
+                        save_dir=vis_dir,
+                        iter_num=current_iter,
+                        prefix=f'{img_name}_{current_iter}_'
+                    )
 
             if with_metrics:
                 # calculate metrics

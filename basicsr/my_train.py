@@ -187,13 +187,14 @@ def main():
         start_epoch = 0
         current_iter = 0
 
-    # Early stopping state
+    # Best metric tracking（各指标独立记录最佳 epoch/iter）
     best_psnr = -float('inf')
-    best_deltaE = float('inf')
+    best_psnr_epoch = 0
     best_psnr_iter = 0
+    best_deltaE = float('inf')
+    best_deltaE_epoch = 0
     best_deltaE_iter = 0
-    patience_counter = 0
-    patience = opt['train'].get('earlystop_patience', 12)
+    best_metrics_path = os.path.join(opt['path']['models'], 'best_metrics.json')
 
     # create message logger (formatted outputs)
     msg_logger = MessageLogger(opt, current_iter, tb_logger)
@@ -231,10 +232,7 @@ def main():
 
     scale = opt['scale']
 
-    model.schedulers = []
-
     epoch = start_epoch
-    early_stopped = False
     while current_iter <= total_iters:
         train_sampler.set_epoch(epoch)
         prefetcher.reset()
@@ -312,57 +310,51 @@ def main():
                     opt['val']['save_img'], rgb2bgr, use_image)
 
                 # Record val loss for plotting
-                model.record_val_loss(val_loss_dict, current_iter)
+                model.record_val_loss(val_loss_dict, epoch)
 
-                # Early stopping check
+                # Best model tracking（各指标独立保存权重和记录）
                 psnr = model.metric_results.get('psnr', -float('inf'))
                 delta_e = model.metric_results.get('deltaE', float('inf'))
 
-                improved = False
                 if psnr > best_psnr:
                     best_psnr = psnr
+                    best_psnr_epoch = epoch
                     best_psnr_iter = current_iter
-                    improved = True
+                    best_psnr_path = os.path.join(opt['path']['models'], 'best_net_g_psnr.pth')
+                    torch.save({'params': model.net_g.state_dict()}, best_psnr_path)
+                    logger.info(f'Best PSNR model saved at epoch {epoch}, iter {current_iter}: PSNR={best_psnr:.4f}')
+
                 if delta_e < best_deltaE:
                     best_deltaE = delta_e
+                    best_deltaE_epoch = epoch
                     best_deltaE_iter = current_iter
-                    improved = True
+                    best_deltaE_path = os.path.join(opt['path']['models'], 'best_net_g_deltaE.pth')
+                    torch.save({'params': model.net_g.state_dict()}, best_deltaE_path)
+                    logger.info(f'Best DeltaE model saved at epoch {epoch}, iter {current_iter}: deltaE={best_deltaE:.4f}')
 
-                if improved:
-                    patience_counter = 0
-                    # Save best model
-                    best_net_path = os.path.join(opt['path']['models'], 'best_net_g.pth')
-                    torch.save({'params': model.net_g.state_dict()}, best_net_path)
-                    # Save best metrics (per-metric best iter)
-                    best_metrics = {
-                        'best_psnr': float(best_psnr),
-                        'best_psnr_iter': int(best_psnr_iter),
-                        'best_deltaE': float(best_deltaE),
-                        'best_deltaE_iter': int(best_deltaE_iter),
-                    }
-                    with open(os.path.join(opt['path']['models'], 'best_metrics.json'), 'w') as f:
-                        json.dump(best_metrics, f, indent=2)
-                    logger.info(f'Best model saved at iter {current_iter}: PSNR={best_psnr:.4f}, deltaE={best_deltaE:.4f}')
-                else:
-                    patience_counter += 1
-                    logger.info(f'No improvement for {patience_counter}/{patience} validations')
-                    if patience_counter >= patience:
-                        logger.info(f'Early stopping triggered at iter {current_iter}')
-                        early_stopped = True
+                best_metrics = {
+                    'best_psnr': {
+                        'value': float(best_psnr),
+                        'epoch': int(best_psnr_epoch),
+                        'iter': int(best_psnr_iter),
+                    },
+                    'best_deltaE': {
+                        'value': float(best_deltaE),
+                        'epoch': int(best_deltaE_epoch),
+                        'iter': int(best_deltaE_iter),
+                    },
+                }
+                with open(best_metrics_path, 'w') as f:
+                    json.dump(best_metrics, f, indent=2)
 
-                # Plot loss curves after validation (always, even on early stop)
-                model._save_loss_curves(current_iter)
-
-                if early_stopped:
-                    break
+                # Plot loss curves after validation
+                model._save_loss_curves(epoch)
 
             data_time = time.time()
             iter_time = time.time()
             train_data = prefetcher.next()
         # end of iter
-        model.end_epoch(current_iter)
-        if early_stopped:
-            break
+        model.end_epoch(epoch)
         epoch += 1
 
     # end of epoch

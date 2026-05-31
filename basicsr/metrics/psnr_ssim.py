@@ -263,7 +263,8 @@ def _ssim_cly(img1, img2):
 
 def calculate_ssim(img1,
                    img2,
-                   crop_border,
+                   mask=None,
+                   crop_border=0,
                    input_order='HWC',
                    test_y_channel=False):
     """Calculate SSIM (structural similarity).

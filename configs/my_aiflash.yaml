@@ -23,7 +23,7 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 0
-    batch_size_per_gpu: 4
+    batch_size_per_gpu: 1
 
     mini_batch_sizes: [1]             
     iters: [300000]
@@ -100,7 +100,7 @@ train:
   # R0+C 核心：输入重建损失 (I_low ≈ R × E)
   input_recon_opt:
     type: CharbonnierLoss
-    loss_weight: 5.0
+    loss_weight: 1.0
     reduction: mean
     eps: !!float 1e-3
 
@@ -137,6 +137,7 @@ val:
   rgb2bgr: true
   use_image: false
   max_minibatch: 8
+  max_vis_images: 2    # 最大可视化图片数
 
   metrics:
     psnr: # metric name, can be arbitrary
@@ -145,6 +146,10 @@ val:
       test_y_channel: false
     deltaE:
       type: calculate_deltaE
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
 
 # logging settings
 logger:

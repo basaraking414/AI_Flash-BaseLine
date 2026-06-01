@@ -206,9 +206,9 @@ class CosineAnnealingRestartCyclicLR(_LRScheduler):
                  restart_weights=(1, ),
                  eta_mins=(0, ),
                  last_epoch=-1):
-        self.periods = periods
-        self.restart_weights = restart_weights
-        self.eta_mins = eta_mins
+        self.periods = [int(p) for p in periods]
+        self.restart_weights = [float(w) for w in restart_weights]
+        self.eta_mins = [float(e) for e in eta_mins]
         assert (len(self.periods) == len(self.restart_weights)
                 ), 'periods and restart_weights should have the same length.'
         self.cumulative_period = [
@@ -219,10 +219,10 @@ class CosineAnnealingRestartCyclicLR(_LRScheduler):
     def get_lr(self):
         idx = get_position_from_periods(self.last_epoch,
                                         self.cumulative_period)
-        current_weight = self.restart_weights[idx]
+        current_weight = float(self.restart_weights[idx])
         nearest_restart = 0 if idx == 0 else self.cumulative_period[idx - 1]
-        current_period = self.periods[idx]
-        eta_min = self.eta_mins[idx]
+        current_period = int(self.periods[idx])
+        eta_min = float(self.eta_mins[idx])
 
         return [
             eta_min + current_weight * 0.5 * (base_lr - eta_min) *

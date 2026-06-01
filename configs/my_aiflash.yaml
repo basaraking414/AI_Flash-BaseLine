@@ -1,5 +1,5 @@
 # general settings
-name: Restormer_AIFlash_maskv2
+name: R0C_input_recon_v0
 model_type: AIFlashModel
 scale: 1
 num_gpu: 1  # 设为你的GPU数量
@@ -11,9 +11,9 @@ datasets:
     name: TrainSet
     type: Dataset_MaskedImage
     # 训练路径
-    dataroot_gt: datasets/train/gt
-    dataroot_lq: datasets/train/input
-    dataroot_mask: datasets/train/mask_personmask
+    dataroot_gt: datasets/train_550/gt
+    dataroot_lq: datasets/train_550/input
+    dataroot_mask: datasets/train_550/mask_personmask
     geometric_augs: true
 
     filename_tmpl: '{}'
@@ -22,8 +22,8 @@ datasets:
 
     # data loader
     use_shuffle: true
-    num_worker_per_gpu: 4
-    batch_size_per_gpu: 1  
+    num_worker_per_gpu: 0
+    batch_size_per_gpu: 1
 
     mini_batch_sizes: [1]             
     iters: [300000]
@@ -38,9 +38,9 @@ datasets:
     name: ValSet
     type: Dataset_PairedImage
     # 验证集，目前直接使用训练集，有需要请自行修改
-    dataroot_gt: datasets/train/gt 
-    dataroot_lq: datasets/train/input
-    dataroot_mask: datasets/train/mask_personmask
+    dataroot_gt: datasets/val_50/gt
+    dataroot_lq: datasets/val_50/input
+    dataroot_mask: datasets/val_50/mask_personmask
     io_backend:
       type: disk
 
@@ -72,9 +72,9 @@ train:
 
   scheduler:
     type: CosineAnnealingRestartCyclicLR
-    periods: [92000, 208000]       
+    periods: [92000, 208000]
     restart_weights: [1,1]
-    eta_mins: [0.0003,0.000001]   
+    eta_mins: [0.0003,0.00001]
   
   mixing_augs:
     mixup: false
@@ -90,52 +90,54 @@ train:
   # losses
   pixel_opt:
     type: CharbonnierLoss_mask
+    loss_weight: 2
+    reduction: mean
+    eps: !!float 1e-3
+
+  # R0+C 核心：关闭 alpha 采样，固定 alpha=1.0
+  alpha_sampling: false
+
+  # R0+C 核心：输入重建损失 (I_low ≈ R × E)
+  input_recon_opt:
+    type: CharbonnierLoss
     loss_weight: 1.0
     reduction: mean
     eps: !!float 1e-3
 
+  # 环境光平滑损失：Total Variation，约束 spatial env_light 低频
+  smooth_opt:
+    type: TVSmoothLoss
+    loss_weight: 0.1
+
   luminance_opt:
     type: FaceLabLoss
-    loss_weight: 0.05
-    lambda_l: 1.0
-    lambda_ab: 0.3
+    loss_weight: 1
+    lambda_l: 1.5
+    lambda_ab: 1.0
 
   grad_opt:
     type: GradientLoss
     loss_weight: 0.2
 
-  color_opt:
-    type: ColorLoss
-    loss_weight: 0.3
-    patch_size: 16
-
   perceptual_opt:
     type: PerceptualLoss
     layer_weights:
-      'conv5_4': 1.0
+      'conv3_4': 1.0
+      'conv4_4': 1.0
     vgg_type: vgg19
     use_input_norm: true
     range_norm: false
-    loss_weight: 0.2
-
-  # 新增: 可控闪光强度 - alpha 采样
-  alpha_sampling: true
-
-  # 新增: 输入重建损失 (L_input_recon)
-  input_recon_opt:
-    type: CharbonnierLoss
-    loss_weight: 0.5
-    reduction: mean
-    eps: !!float 1e-3
+    loss_weight: 0.001
 
 # validation settings
 val:
   window_size: 8
-  val_freq: !!float 5e3 # 每 5000 次迭代验证一次
-  save_img: true        # 开启保存图片 (代码里已限制只存前10张)
+  val_freq: !!float 5500 # 每 5000 次迭代验证一次
+  save_img: true        # 开启保存图片
   rgb2bgr: true
   use_image: false
   max_minibatch: 8
+  max_vis_images: 2    # 最大可视化图片数
 
   metrics:
     psnr: # metric name, can be arbitrary
@@ -144,11 +146,15 @@ val:
       test_y_channel: false
     deltaE:
       type: calculate_deltaE
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
 
 # logging settings
 logger:
   print_freq: 100
-  save_checkpoint_freq: !!float 5e3
+  save_checkpoint_freq: !!float 5500
   use_tb_logger: true   # 开启 TensorBoard
   wandb:
     project: ~ # 设置 WandB 项目名称

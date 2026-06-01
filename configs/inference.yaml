@@ -1,0 +1,55 @@
+# 推理评估配置
+name: inference_eval
+
+# 模型架构（指定结构，与训练 config 一致）
+network_g:
+  type: Restormer_AIFlash_mask_attention
+  inp_channels: 3
+  out_channels: 3
+  dim: 16
+  num_blocks: [2,2,2,2]
+  num_refinement_blocks: 2
+  heads: [1,2,4,8]
+  ffn_expansion_factor: 2.66
+  bias: False
+  LayerNorm_type: BiasFree
+  dual_pixel_task: False
+
+# 模型权重路径（修改为实际路径）
+weights_path: experiments/R0C_input_recon_v0/models/best_net_g_psnr.pth
+
+# 数据路径
+datasets:
+  val:
+    dataroot_lq: datasets/val_50/input
+    dataroot_gt: datasets/val_50/gt
+    dataroot_mask: datasets/val_50/mask_personmask
+
+# 输出目录
+output_dir: results/inference
+
+# 推理设置
+device: cuda:0
+pad_multiple: 8
+
+# 可视化设置
+visualize:
+  enabled: true
+  max_images: 10           # 最多可视化多少张图的中间张量
+
+# 评估设置
+eval:
+  enabled: true
+  compute_psnr: true
+  compute_deltae: true
+  compute_ssim: true
+  compute_losses: true     # 计算所有训练 loss
+
+# 效率分析
+efficiency:
+  compute_flops: true
+  compute_params: true
+  compute_time: true
+  warmup_runs: 3           # 预热次数（不计入推理时间）
+  timed_runs: 10           # 计时次数
+  input_size: [1, 3, 256, 256]   # FLOPs/计时用的输入尺寸

@@ -300,11 +300,11 @@ def compute_all_losses(output, gt, mask, lq, intermediate, device):
 # 7. 可视化
 # ============================================================
 
-def visualize_single(intermediate, save_dir, img_name):
+def visualize_single(intermediate, save_dir, img_name, gt=None):
     """调用 visualize_intermediates 保存中间张量可视化"""
     if intermediate is not None:
         visualize_intermediates(
-            intermediate, save_dir, iter_num=0, prefix=f'{img_name}_'
+            intermediate, save_dir, iter_num=0, prefix=f'{img_name}_', gt=gt
         )
 
 
@@ -418,17 +418,19 @@ def main():
 
         # 裁剪回原始尺寸
         output = output[:, :, :orig_h, :orig_w]
-        gt_crop = gt_pad[:, :, :orig_h, :orig_w]
-        mask_crop = mask_pad[:, :, :orig_h, :orig_w]
-        lq_crop = lq[:, :, :orig_h, :orig_w]
+        gt_crop = gt_pad[:, :, :orig_h, :orig_w].to(device)
+        mask_crop = mask_pad[:, :, :orig_h, :orig_w].to(device)
+        lq_crop = lq[:, :, :orig_h, :orig_w].to(device)
 
-        # 保存输出图
+        # 保存输出图和 GT
         save_path = os.path.join(output_dir, 'images', f'{img_name}.png')
         save_img(output, save_path)
+        gt_save_path = os.path.join(output_dir, 'images', f'{img_name}_gt.png')
+        save_img(gt_crop, gt_save_path)
 
         # 可视化中间张量
         if vis_enabled and idx < vis_max:
-            visualize_single(intermediate, vis_dir, img_name)
+            visualize_single(intermediate, vis_dir, img_name, gt=gt_crop)
 
         # 评估指标
         if eval_enabled:
@@ -438,6 +440,15 @@ def main():
                 metrics = compute_metrics(output, gt_crop, mask_crop)
                 metrics['img_name'] = img_name
                 all_metrics.append(metrics)
+
+                # Debug: 第一张图打印详细信息
+                if idx == 0:
+                    out_np = output.squeeze(0).cpu().numpy()
+                    gt_np = gt_crop.squeeze(0).cpu().numpy()
+                    mse = np.mean((out_np - gt_np) ** 2)
+                    print(f'  [DEBUG] {img_name}: output range=[{out_np.min():.4f}, {out_np.max():.4f}], '
+                          f'gt range=[{gt_np.min():.4f}, {gt_np.max():.4f}], '
+                          f'MSE={mse:.2e}, PSNR={metrics["psnr"]:.2f}')
 
             if eval_cfg.get('compute_losses', False) and intermediate is not None:
                 losses = compute_all_losses(

@@ -16,7 +16,7 @@ network_g:
   dual_pixel_task: False
 
 # 模型权重路径（修改为实际路径）
-weights_path: experiments/R0C_input_recon_v0/models/best_net_g_psnr.pth
+weights_path: experiments/R0C_input_recon_v0/models/best_net_g.pth
 
 # 数据路径
 datasets:

@@ -595,6 +595,7 @@ class Restormer_AIFlash_mask_attention(nn.Module):
 
         out_img = reflectance * illumination
         out_img = linear_to_srgb(out_img)
+        out_img = torch.clamp(out_img, 0, 1)
 
         # 改动2: 存储中间张量为模型属性（供训练代码访问）
         self._intermediate = {

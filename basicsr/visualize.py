@@ -33,20 +33,23 @@ def tensor_to_numpy(tensor):
     return tensor.detach().cpu().clamp(0, 1).permute(1, 2, 0).numpy()
 
 
-def visualize_intermediates(intermediates, save_dir, iter_num, prefix=''):
+def visualize_intermediates(intermediates, save_dir, iter_num, prefix='', gt=None):
     """
     可视化并保存中间张量
 
     Args:
-        intermediates: dict, 包含 R, E, F, illumination 等张量
+        intermediates: dict, 包含 R, E, F, illumination 等张量（linear RGB 空间）
         save_dir: str, 保存目录
         iter_num: int, 当前迭代次数
         prefix: str, 文件名前缀
+        gt: tensor, GT 图像 (1, 3, H, W) sRGB 空间，可选
 
     Returns:
         str: 保存的图片路径
     """
     os.makedirs(save_dir, exist_ok=True)
+
+    from basicsr.models.archs.my_restormer_arch import linear_to_srgb
 
     reflectance = intermediates.get('reflectance')
     env_light = intermediates.get('env_light')
@@ -54,15 +57,22 @@ def visualize_intermediates(intermediates, save_dir, iter_num, prefix=''):
     illumination = intermediates.get('illumination')
     alpha = intermediates.get('alpha', 1.0)
 
+    # linear RGB → sRGB（用于可视化显示）
+    reflectance_vis = linear_to_srgb(reflectance.clamp(0, 1)).clamp(0, 1) if reflectance is not None else None
+    if reflectance is not None and illumination is not None:
+        output_vis = linear_to_srgb((reflectance * illumination).clamp(0, 1)).clamp(0, 1)
+    else:
+        output_vis = None
+
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     fig.suptitle(f'Intermediate Visualizations (Iter {iter_num})', fontsize=16)
 
-    # Reflectance (R)
-    if reflectance is not None:
+    # Reflectance (R) — sRGB 显示
+    if reflectance_vis is not None:
         ax = axes[0, 0]
-        img = tensor_to_numpy(reflectance)
+        img = tensor_to_numpy(reflectance_vis)
         ax.imshow(img)
-        ax.set_title(f'Reflectance (R)\nmean={reflectance.mean():.3f}, std={reflectance.std():.3f}')
+        ax.set_title(f'Reflectance (R, sRGB)\nmean={reflectance.mean():.3f}, std={reflectance.std():.3f}')
         ax.axis('off')
 
     # Environmental Light (E)
@@ -104,27 +114,23 @@ def visualize_intermediates(intermediates, save_dir, iter_num, prefix=''):
         ax.set_title(f'Illumination (E + αF)\nα={alpha:.2f}, mean={illumination.mean():.3f}')
         ax.axis('off')
 
-    # Output (R × Illumination)
-    output = reflectance * illumination if reflectance is not None and illumination is not None else None
-    if output is not None:
+    # Output (R × Illumination) — sRGB 显示
+    if output_vis is not None:
         ax = axes[1, 1]
-        img = tensor_to_numpy(output)
+        img = tensor_to_numpy(output_vis)
         ax.imshow(img)
-        ax.set_title(f'Output (R × Illum)\nmean={output.mean():.3f}')
+        ax.set_title(f'Output (R × Illum, sRGB)\nmean={output_vis.mean():.3f}')
         ax.axis('off')
 
-    # 统计信息
+    # GT 对比
     ax = axes[1, 2]
-    stats = f'Alpha: {alpha:.2f}\n\n'
-    if reflectance is not None:
-        stats += f'Reflectance:\n  mean={reflectance.mean():.4f}\n  std={reflectance.std():.4f}\n\n'
-    if env_light is not None:
-        stats += f'Env Light:\n  mean={env_light.mean():.4f}\n\n'
-    if flash_map is not None:
-        stats += f'Flash Map:\n  mean={flash_map.mean():.4f}\n  max={flash_map.max():.4f}\n'
-    ax.text(0.1, 0.5, stats, transform=ax.transAxes, fontsize=12,
-            verticalalignment='center', fontfamily='monospace',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    if gt is not None:
+        img = tensor_to_numpy(gt)
+        ax.imshow(img)
+        ax.set_title('Ground Truth (GT)')
+    else:
+        ax.text(0.5, 0.5, 'No GT', transform=ax.transAxes, fontsize=14,
+                ha='center', va='center')
     ax.axis('off')
 
     plt.tight_layout()
@@ -132,15 +138,17 @@ def visualize_intermediates(intermediates, save_dir, iter_num, prefix=''):
     plt.savefig(save_path, dpi=100, bbox_inches='tight')
     plt.close()
 
-    # 保存单独的图片
+    # 保存单独的图片（R 和 output 转 sRGB 保存）
     individual_dir = os.path.join(save_dir, 'individual')
     os.makedirs(individual_dir, exist_ok=True)
-    if reflectance is not None:
-        save_image(reflectance.clamp(0, 1), os.path.join(individual_dir, f'{prefix}R_{iter_num:06d}.png'))
+    if reflectance_vis is not None:
+        save_image(reflectance_vis, os.path.join(individual_dir, f'{prefix}R_{iter_num:06d}.png'))
     if flash_map is not None:
         save_image(flash_map.clamp(0, 1), os.path.join(individual_dir, f'{prefix}F_{iter_num:06d}.png'))
-    if output is not None:
-        save_image(output.clamp(0, 1), os.path.join(individual_dir, f'{prefix}output_{iter_num:06d}.png'))
+    if output_vis is not None:
+        save_image(output_vis, os.path.join(individual_dir, f'{prefix}output_{iter_num:06d}.png'))
+    if gt is not None:
+        save_image(gt.clamp(0, 1), os.path.join(individual_dir, f'{prefix}GT_{iter_num:06d}.png'))
 
     return save_path
 

@@ -145,8 +145,9 @@ def main():
         states = []
 
     resume_state = None
-    if len(states) > 0:
-        max_state_file = '{}.state'.format(max([int(x[0:-6]) for x in states]))
+    state_files = [x for x in states if x.endswith('.state')]
+    if len(state_files) > 0:
+        max_state_file = '{}.state'.format(max([int(x[0:-6]) for x in state_files]))
         resume_state = os.path.join(state_folder_path, max_state_file)
         opt['path']['resume_state'] = resume_state
 

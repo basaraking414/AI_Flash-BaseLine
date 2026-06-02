@@ -263,16 +263,20 @@ def main():
         prefetcher.reset()
         train_data = prefetcher.next()
 
+        # 恢复训练时跳过已见数据（prefetcher 从 epoch 开头重新遍历）
+        if resume_iter > 0 and epoch == start_epoch:
+            skip_count = 0
+            while train_data is not None and skip_count < resume_iter:
+                train_data = prefetcher.next()
+                skip_count += 1
+            logger.info(f'Skipped {skip_count} data samples for resume')
+
         while train_data is not None:
             data_time = time.time() - data_time
 
             current_iter += 1
             if current_iter > total_iters:
                 break
-            # 恢复训练时跳过已见数据
-            if current_iter <= resume_iter:
-                train_data = prefetcher.next()
-                continue
             # update learning rate
             model.update_learning_rate(
                 current_iter, warmup_iter=opt['train'].get('warmup_iter', -1))

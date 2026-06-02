@@ -161,6 +161,67 @@ class NAFNet(nn.Module):
         x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
         return x
 
+
+class NAFNet_AIFlash(NAFNet):
+    """NAFNet + DC-LIDM：带 Retinex 光照分解的 NAFNet"""
+
+    def __init__(self, img_channel=3, width=16, middle_blk_num=1,
+                 enc_blk_nums=[], dec_blk_nums=[], num_heads=4):
+        super().__init__(img_channel, width, middle_blk_num, enc_blk_nums, dec_blk_nums)
+
+        from basicsr.models.archs.DC_LIDM import DC_LIDM
+        bottleneck_ch = width * 2 ** len(enc_blk_nums)
+        self.dc_lidm = DC_LIDM(bottleneck_ch, num_heads=num_heads)
+
+    def forward(self, inp, mask, alpha=1.0):
+        from basicsr.models.archs.DC_LIDM import srgb_to_linear, linear_to_srgb
+
+        B, C, H, W = inp.shape
+        inp_padded = self.check_image_size(inp)
+
+        # sRGB → linear
+        inp_linear = srgb_to_linear(inp_padded)
+
+        x = self.intro(inp_linear)
+
+        # Encoder
+        encs = []
+        for encoder, down in zip(self.encoders, self.downs):
+            x = encoder(x)
+            encs.append(x)
+            x = down(x)
+
+        # Bottleneck
+        bottleneck = self.middle_blks(x)
+
+        # Decoder
+        x = bottleneck
+        for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
+            x = up(x)
+            x = x + enc_skip
+            x = decoder(x)
+
+        decoder_out = self.ending(x)
+
+        # DC-LIDM: Retinex 分解 + 合成
+        result = self.dc_lidm(bottleneck, decoder_out[:, :, :H, :W],
+                               mask, alpha, out_size=(H, W))
+
+        out_img = linear_to_srgb(result['output'])
+        out_img = torch.clamp(out_img, 0, 1)
+
+        # 存储中间结果（与 Restormer_AIFlash_mask_attention 兼容）
+        self._intermediate = {
+            'reflectance': result['reflectance'],
+            'env_light': result['env_light'],
+            'flash_map': result['flash_map'],
+            'alpha': result['alpha'],
+            'illumination': result['illumination'],
+        }
+
+        return out_img
+
+
 class NAFNetLocal(Local_Base, NAFNet):
     def __init__(self, *args, train_size=(1, 3, 256, 256), fast_imp=False, **kwargs):
         Local_Base.__init__(self)

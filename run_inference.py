@@ -501,7 +501,7 @@ def main():
 
     # 汇总 losses
     if all_losses:
-        loss_keys = [k for k in all_losses[0].keys() if k != 'img_name']
+        loss_keys = [k for k in all_losses[0].keys() if k not in ('img_name', 'l_total')]
         for key in loss_keys:
             values = [l[key] for l in all_losses]
             report['losses'][key] = {

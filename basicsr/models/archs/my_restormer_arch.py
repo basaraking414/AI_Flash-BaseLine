@@ -474,14 +474,14 @@ class Restormer_AIFlash_mask_attention(nn.Module):
     def __init__(self,
                  inp_channels=3,
                  out_channels=3,
-                 dim=48,
-                 num_blocks=[4, 6, 6, 8],
-                 num_refinement_blocks=4,
+                 dim=16,
+                 num_blocks=[2, 2, 2, 2],
+                 num_refinement_blocks=2,
                  heads=[1, 2, 4, 8],
                  ffn_expansion_factor=2.66,
                  bias=False,
-                 LayerNorm_type='WithBias',  ## Other option 'BiasFree'
-                 dual_pixel_task=False  ## True for dual-pixel defocus deblurring only. Also set inp_channels=6
+                 LayerNorm_type='BiasFree',
+                 dual_pixel_task=False
                  ):
 
         super(Restormer_AIFlash_mask_attention, self).__init__()

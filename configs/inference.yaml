@@ -1,22 +1,19 @@
-# 推理评估配置
-name: inference_eval
-
 # 模型架构（指定结构，与训练 config 一致）
 network_g:
-  type: Restormer_AIFlash_mask_attention
+  type: Restormer
   inp_channels: 3
   out_channels: 3
   dim: 16
-  num_blocks: [2,2,2,2]
+  num_blocks: [2, 2, 2, 2]
   num_refinement_blocks: 2
-  heads: [1,2,4,8]
+  heads: [1, 2, 4, 8]
   ffn_expansion_factor: 2.66
   bias: False
   LayerNorm_type: BiasFree
   dual_pixel_task: False
 
 # 模型权重路径（修改为实际路径）
-weights_path: experiments/R0C_input_recon_v0/models/best_net_g.pth
+weights_path: best_model/net_g_200000.pth
 
 # 数据路径
 datasets:
@@ -24,9 +21,6 @@ datasets:
     dataroot_lq: datasets/val_50/input
     dataroot_gt: datasets/val_50/gt
     dataroot_mask: datasets/val_50/mask_personmask
-
-# 输出目录
-output_dir: results/inference
 
 # 推理设置
 device: cuda:0

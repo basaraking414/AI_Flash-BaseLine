@@ -484,9 +484,9 @@ class UpsampleOneStep(nn.Sequential):
 
 
 class SwinIR(nn.Module):
-    def __init__(self, img_size=64, patch_size=1, in_chans=3,
+    def __init__(self, img_size=256, patch_size=1, in_chans=3,
                  embed_dim=96, depths=[6, 6, 6, 6], num_heads=[6, 6, 6, 6],
-                 window_size=7, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+                 window_size=8, mlp_ratio=4., qkv_bias=True, qk_scale=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
                  use_checkpoint=False, upscale=1, img_range=1., upsampler='', resi_connection='1conv',
@@ -618,7 +618,7 @@ class SwinIR(nn.Module):
 
         return x
 
-    def forward(self, x, mask):
+    def forward(self, x, mask=None, alpha=1.0):
         H, W = x.shape[2:]
         x = self.check_image_size(x)
 
@@ -677,4 +677,54 @@ class SwinIR(nn.Module):
             except Exception:
                 pass
         return flops
+
+
+class SwinIR_AIFlash(SwinIR):
+    """SwinIR baseline，适配 BasicSR 接口（不使用 mask/alpha）"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def forward(self, inp, mask=None, alpha=1.0):
+        return super().forward(inp, mask)
+
+
+class SwinIR_AIFlash_LIDM(SwinIR):
+    """SwinIR + DC-LIDM：带 Retinex 光照分解的 SwinIR"""
+
+    def __init__(self, num_heads=4, **kwargs):
+        super().__init__(**kwargs)
+        from basicsr.models.archs.dc_lidm import DC_LIDM
+        self.dc_lidm = DC_LIDM(self.embed_dim, num_heads=num_heads)
+
+    def forward(self, inp, mask=None, alpha=1.0):
+        from basicsr.models.archs.dc_lidm import srgb_to_linear, linear_to_srgb
+
+        H, W = inp.shape[2:]
+        x = self.check_image_size(inp)
+        self.mean = self.mean.type_as(x)
+
+        x_linear = srgb_to_linear(x)
+        x_linear = (x_linear - self.mean) * self.img_range
+
+        x_first = self.conv_first(x_linear)
+        bottleneck = self.forward_features(x_first)
+        decoder_out = self.conv_after_body(bottleneck) + x_first
+        decoder_out = x_linear + self.conv_last(decoder_out)
+        decoder_out = decoder_out[:, :, :H, :W]
+
+        result = self.dc_lidm(bottleneck, decoder_out, mask, alpha,
+                               out_size=(H, W))
+
+        out_img = linear_to_srgb(result['output'])
+        out_img = torch.clamp(out_img, 0, 1)
+
+        self._intermediate = {
+            'reflectance': result['reflectance'],
+            'env_light': result['env_light'],
+            'flash_map': result['flash_map'],
+            'alpha': result['alpha'],
+            'illumination': result['illumination'],
+        }
+        return out_img
 

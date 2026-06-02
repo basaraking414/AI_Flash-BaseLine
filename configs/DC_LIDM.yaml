@@ -46,13 +46,7 @@ datasets:
 
 # network structures
 network_g:
-  type: NAFNet_AIFlash  # NAFNet + DC-LIDM，支持 alpha 控制
-  img_channel: 3
-  width: 32
-  middle_blk_num: 1
-  enc_blk_nums: [2, 2, 4, 8]
-  dec_blk_nums: [2, 2, 2, 2]
-  num_heads: 4
+  type: NAFNet_AIFlash_LIDM
 
 # path
 path:

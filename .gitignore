@@ -16,6 +16,7 @@ experiments/
 result/
 outputs/
 results/
+inference/
 
 # TensorBoard logs
 tb_logger/

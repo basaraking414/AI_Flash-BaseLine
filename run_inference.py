@@ -109,7 +109,7 @@ def compute_flops(model, input_size=(1, 3, 256, 256), device='cuda'):
         model_for_flops = deepcopy(model).to(device).eval()
         dummy_input = torch.randn(*input_size).to(device)
         dummy_mask = torch.ones(input_size[0], 1, input_size[2], input_size[3]).to(device)
-        flops, params = profile(model_for_flops, inputs=(dummy_input, dummy_mask), verbose=False)
+        flops, params = profile(model_for_flops, inputs=(dummy_input, dummy_mask, 1.0), verbose=False)
         del model_for_flops, dummy_input, dummy_mask
         torch.cuda.empty_cache()
         return {
@@ -135,7 +135,7 @@ def measure_inference_time(model, input_size, device, warmup=3, runs=10):
     # Warmup
     with torch.no_grad():
         for _ in range(warmup):
-            model(dummy_input, dummy_mask)
+            model(dummy_input, dummy_mask, alpha=1.0)
             torch.cuda.synchronize()
 
     # Timed runs
@@ -144,7 +144,7 @@ def measure_inference_time(model, input_size, device, warmup=3, runs=10):
         for _ in range(runs):
             torch.cuda.synchronize()
             start = time.time()
-            model(dummy_input, dummy_mask)
+            model(dummy_input, dummy_mask, alpha=1.0)
             torch.cuda.synchronize()
             end = time.time()
             times.append((end - start) * 1000)  # ms
@@ -329,8 +329,10 @@ def main():
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
 
     weights_path = args.weights or config['weights_path']
-    output_dir = config.get('output_dir', 'results/inference')
     pad_multiple = config.get('pad_multiple', 8)
+
+    net_type = config['network_g']['type']
+    output_dir = os.path.join('inference', net_type)
 
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.join(output_dir, 'images'), exist_ok=True)
@@ -493,10 +495,6 @@ def main():
                 'std': float(np.std(values)),
                 'min': float(np.min(values)),
                 'max': float(np.max(values)),
-                'per_image': [
-                    {'img_name': m['img_name'], 'value': float(m[key])}
-                    for m in all_metrics
-                ],
             }
 
     # 汇总 losses
@@ -507,10 +505,6 @@ def main():
             report['losses'][key] = {
                 'mean': float(np.mean(values)),
                 'std': float(np.std(values)),
-                'per_image': [
-                    {'img_name': l['img_name'], 'value': float(l[key])}
-                    for l in all_losses
-                ],
             }
 
     # 保存 report

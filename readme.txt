@@ -13,6 +13,8 @@ inference运行之前，需要将待处理的图像数据集，保存在dataset/
 
 注意：本仓库只发布论文主模型（Restormer + DC-LIDM）的代码与权重，权重（best_Restormer_LIDM.pth）
 从 Releases 下载后放入 best_model/；数据集来自 NTIRE 2026 AI Flash Portrait 挑战赛，请按其公开渠道获取。
-更完整的训练/推理说明见 README.md。
+更完整的说明见 README.md（英文）与 README_zh-CN.md（中文）：
+训练 `python -m basicsr.my_train -opt configs/my_aiflash.yaml`（冒烟测试用 configs/smoke_val1.yaml），
+评测 `python -m basicsr.test -opt configs/eval_val50.yaml`（复现论文 Table I 的 Ours 行）。
 
 

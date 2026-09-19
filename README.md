@@ -1,236 +1,308 @@
-# DC-LIDM — Latent Illumination Decomposition with Dual Reconstruction Constraints for Night-Time Flash Portrait Enhancement
+# DC-LIDM: Latent Illumination Decomposition with Dual Reconstruction Constraints for Night-Time Flash Portrait Enhancement
 
-官方代码仓库，对应论文：
+**English** | [中文](README_zh-CN.md)
 
-> Liqing Wang, Ming Ronnier Luo, *"Latent Illumination Decomposition with Dual Reconstruction Constraints for
-> Night-Time Flash Portrait Enhancement"*, IEEE Access (投稿中).
+Official code release for:
 
-本仓库发布**本文方法（Restormer + DC-LIDM 主线）的实现与权重**。
-论文中作为对比的其它方法（RetinexNet / SCI / KinD / Zero-DCE / RetinexFormer / NAFNet / Uformer / plain Restormer）
-不在本仓库内，请从各自的官方仓库获取，并按下文 §7 的统一协议适配训练。
+> Liqing Wang, Ming Ronnier Luo, *"Latent Illumination Decomposition with Dual Reconstruction
+> Constraints for Night-Time Flash Portrait Enhancement"*, IEEE Access (under review).
+
+DC-LIDM decomposes a low-light portrait into **reflectance `R`**, a **global environmental
+illumination `L_env`** and a **spatially varying flash map `L_flash`**, recombines them in
+**linear RGB** as `I = R × (L_env + α·L_flash)`, and predicts the flash map with **mask-guided
+cross-attention** (the portrait mask acts as the query). Two reconstruction constraints
+(input side and ground-truth side) share the same reflectance and regularize the decomposition.
+A single scalar `α` gives continuous control of the flash strength at inference time.
+
+**Main model:** Restormer backbone + DC-LIDM, 1.54 M parameters, 8.32 G FLOPs @ 256×256,
+**PSNR 31.35 / ΔE 2.77 / SSIM 0.968** on the 50-image validation split (paper Table I, "Ours").
 
 ---
 
-## 0. 仓库范围（先读这一段）
+## 1. Scope: what is (and is not) in this repository
 
-| 论文内容 | 本仓库是否可复现 | 说明 |
+| Item | Included | Note |
 |---|---|---|
-| Table I 「Ours」(Restormer+DC-LIDM) | ✅ | `configs/my_aiflash.yaml` + `best_model/best_Restormer_LIDM.pth` |
-| Table II 「Full」档 | ✅ | 同上（`Full` = 主模型配置） |
-| Table II 「Base.」及 V1/V2/V3 档 | ❌ | 对应 plain Restormer 与历史中间版本，未随仓库分发 |
-| Table III（NAFNet / Uformer + DC-LIDM） | ❌ | 需从 NAFNet / Uformer 官方仓库适配；`DC_LIDM.py` 提供了模块接口 |
-| Table IV 的对比列 | ❌ | 属其它方法的参数量/FLOPs |
-| Fig. 1/2（结构、Retinex 分解） | ✅ | 见 `basicsr/models/archs/my_restormer_arch.py` |
-| Fig. 9（R / L / 差值可视化） | ⚠️ | 训练/验证会保存中间量，仓库未附独立可视化脚本 |
-| Fig. 12（α 可控闪光） | ✅ | `python inference.py --alpha <v>` |
+| Main model `Restormer_AIFlash_mask_attention` | ✅ | `basicsr/models/archs/my_restormer_arch.py` |
+| Standalone DC-LIDM module (`DC_LIDM.py`, plug-and-play interface) | ✅ | for inserting into other encoder–decoder backbones |
+| Losses / metrics (Charbonnier, FaceLab, perceptual, gradient, TV; PSNR/SSIM/ΔE) | ✅ | `basicsr/models/losses/`, `basicsr/metrics/` |
+| Training / evaluation / inference entry points | ✅ | `basicsr/my_train.py`, `basicsr/test.py`, `inference.py` |
+| Pre-trained main model | ✅ (GitHub Releases) | `best_Restormer_LIDM.pth`, see §5 |
+| Full-scale training data (550 pairs) | ❌ | public challenge data, get it from the challenge website (§4) |
+| The 7 external comparison methods of Table I | ❌ | RetinexNet / SCI / KinD / Zero-DCE / RetinexFormer / NAFNet / Uformer / plain Restormer: please adapt them from their official repositories |
+| Cross-backbone variants (NAFNet+DC-LIDM, Uformer+DC-LIDM) | ❌ | adapt `DC_LIDM.py` into those backbones from their official code |
+| Ablation variants V1/V2/V3 | ❌ | historical intermediate models, not released |
 
-> 统一对比协议（论文 §IV-A）：同一 550/50 划分、同一输入管线、同一监督损失、ΔE 在**人像掩码内**按 CIE76 平均。
-> ΔE 的实现见 `basicsr/metrics/psnr_ssim.py` 的 `calculate_deltaE(img1, img2, mask)`；掩码按 `mask > 0` 二值化。
+**Comparison protocol** used in the paper (and reproducible with the code here): same 550/50 split,
+same input pipeline, one unified supervised loss, `crop_border=0`, no Y-channel conversion, and
+**ΔE averaged inside the portrait mask** (CIE76 in CIELAB).
 
 ---
 
-## 1. 目录结构
+## 2. Verified end-to-end (measured in this repository)
+
+Hardware / software: **NVIDIA RTX 4060 Laptop GPU (8 GB), CUDA 12.6,
+torch 2.10.0+cu126, torchvision 0.25.0+cu126, Python 3.13.11** (see `requirements.txt`).
+
+| Stage | Command | Measured result |
+|---|---|---|
+| **Training** (smoke: 1 sample, 20 iters) | `python -m basicsr.my_train -opt configs/smoke_val1.yaml` | exit 0, 23 s; all 6 losses computed; validation at iter 10 and 20; writes `best_net_g_psnr.pth`, `best_net_g_deltaE.pth`, `net_g_latest.pth`, `.state` files, loss curves, TensorBoard events and R/E/F/illumination visualizations. A second run correctly **auto-resumed** from `training_states/` |
+| **Evaluation** (released weight, 50 val images) | `python -m basicsr.test -opt configs/eval_val50.yaml` | exit 0, 48 s → **PSNR 31.3518 / ΔE 2.7683 / SSIM 0.9676** — reproduces paper Table I "Ours" (31.35 / 2.77 / 0.968) |
+| **Inference** (batch) | `python inference.py` | 10/10 images written to `result/test/`, exit 0 |
+| **Inference** (released weight) | `python inference.py --config configs/my_aiflash.yaml --weights best_model/best_Restormer_LIDM.pth` | 10/10 at `α=1`, 10/10 at `α=0`, exit 0 |
+| **Tiled inference** | `python inference.py --tile 512 --tile_overlap 32` | mean abs. difference vs full-resolution: **1.62/255** (max 21/255, seam blending only) |
+| **Flash control `α`** | `python inference.py --alpha 0 / 0.5 / 1 / 2` | mean luminance rises monotonically: 0.527 → 0.568 → 0.602 → 0.660 (locally trained smoke checkpoint) |
+| **Input-side constraint** | released weight, `--alpha 0` | `mean|α=0 − input| = 3.36/255` (1.3 %): the decomposition does reconstruct the low-light input, as Eq. (6) requires |
+| **CPU inference** | `python inference.py --device cpu` | 10.8 s per 1024×768 image |
+
+> The smoke model itself is only 20 iterations old, so its PSNR/ΔE values are meaningless as quality
+> numbers — they only demonstrate that the whole training/validation/evaluation plumbing runs.
+
+---
+
+## 3. Repository structure
 
 ```
 AI-Flash-project/
-├── basicsr/                          # 精简后的 BasicSR 框架
-│   ├── data/                         # Dataset_MaskedImage / Dataset_PairedImage（含掩码读取）
+├── basicsr/                              # trimmed BasicSR framework
+│   ├── __init__.py
+│   ├── data/                             # Dataset_MaskedImage / Dataset_PairedImage (with masks)
 │   ├── models/
 │   │   ├── archs/
-│   │   │   ├── my_restormer_arch.py   # ★ 主模型：Restormer_AIFlash_mask_attention + EnvLightHead + FlashHeadMasked
-│   │   │   └── DC_LIDM.py             # ★ 独立 DC-LIDM 模块（plug-and-play 接口，供其它 backbone 适配）
-│   │   ├── losses/losses.py           # Charbonnier / Charbonnier_mask / FaceLab / Perceptual / Gradient / TVSmooth
-│   │   ├── my_ai_flash_model.py       # AIFlashModel：双重建约束、损失组合、best checkpoint
-│   │   ├── image_restoration_model.py # 框架自带通用模型
+│   │   │   ├── my_restormer_arch.py       # main model + EnvLightHead + FlashHeadMasked + sRGB<->linear
+│   │   │   └── DC_LIDM.py                 # standalone DC-LIDM module (plug-and-play)
+│   │   ├── losses/losses.py               # Charbonnier / Charbonnier_mask / FaceLab / Perceptual / Gradient / TVSmooth
+│   │   ├── my_ai_flash_model.py           # AIFlashModel: dual constraints, loss assembly, best checkpoints
+│   │   ├── image_restoration_model.py     # generic framework model
 │   │   ├── base_model.py  lr_scheduler.py
-│   ├── metrics/psnr_ssim.py           # PSNR / SSIM / ΔE（掩码内 CIE76）
-│   ├── utils/                         # logger、options、img_util、file_client ...
-│   ├── my_train.py                    # ★ 训练入口（带 mask；不要用 train.py）
-│   ├── test.py                        # 验证/测试入口
-│   └── visualize.py                   # 中间张量（R/E/F）与 loss 曲线可视化
+│   ├── metrics/psnr_ssim.py               # PSNR / SSIM / ΔE (masked CIE76)
+│   ├── utils/
+│   ├── my_train.py                        # training entry point (mask-aware) -- use this one
+│   ├── test.py                            # evaluation entry point
+│   ├── train.py                           # original entry point without mask support
+│   └── visualize.py                       # intermediate-tensor and loss-curve plotting
 ├── configs/
-│   ├── my_aiflash.yaml                # ★ 主模型训练配置（论文 Table I「Ours」/ Table II「Full」）
-│   └── inference.yaml                 # 推理/效率分析模板（含 FLOPs、计时、α 可视化开关）
-├── best_model/                        # 权重目录（.gitignore 忽略；从 Releases 下载）
-├── inference.py                       # ★ 单图/批量推理，支持 --alpha 可控闪光
+│   ├── my_aiflash.yaml                    # paper training config (Table I "Ours" / Table II "Full")
+│   ├── eval_val50.yaml                    # reproduce Table I "Ours" on val_50
+│   ├── smoke_val1.yaml                    # 1-sample / 20-iteration smoke test
+│   └── inference.yaml                     # inference / efficiency template
+├── best_model/                            # put released weights here (git-ignored)
+├── inference.py                           # single-image and batch inference, --alpha control
 ├── requirements.txt  setup.py  setup.cfg  VERSION
-├── readme.txt                         # 早期速记（内容以本文件为准）
-└── README.md
+├── LICENSE  THIRD_PARTY_NOTICES.md
+└── README.md  README_zh-CN.md  readme.txt
 ```
 
 ---
 
-## 2. 环境配置
+## 4. Data
+
+Dataset: **NTIRE 2026 AI Flash Portrait** (Track 3 of the 3rd Restore Any Image Model Challenge),
+download from <https://www.codabench.org/competitions/12885/>.
+This repository does **not** redistribute the data — please follow the challenge terms.
+
+The paper uses the 600 public pairs split into **550 train / 50 validation**:
+
+```
+datasets/
+├── train_550/{gt,input,mask_personmask}/
+└── val_50/{gt,input,mask_personmask}/      # all reported metrics
+
+datasets/val_1/{gt,input,mask_personmask}/  # 1 sample, used by the smoke config
+dataset/test/{input,mask_personmask}/       # default input of inference.py
+result/test/                                # default output of inference.py
+```
+
+Masks are paired with images **by file name** (`input/001.jpg` ↔ `mask_personmask/001.jpg`) and
+binarized with `mask > 0`, matching the training pipeline. Images are rounded/cropped to multiples
+of 8 as required by the multi-scale backbone.
+
+---
+
+## 5. Weights
+
+Only the main model is published, as a GitHub **Release** asset:
+
+| File | Architecture | Reproduces |
+|---|---|---|
+| `best_Restormer_LIDM.pth` | `Restormer_AIFlash_mask_attention` | PSNR 31.35 / ΔE 2.77 / SSIM 0.968 (Table I "Ours") |
+
+1. Download it from the repository's **Releases** page.
+2. Put it at `best_model/best_Restormer_LIDM.pth` (the directory is git-ignored, create it if needed).
+3. Optional integrity check: `sha256sum best_model/best_Restormer_LIDM.pth` /
+   `Get-FileHash best_model/best_Restormer_LIDM.pth -Algorithm SHA256`.
+
+The checkpoint is stored as `torch.save({'params': state_dict})`; the loader also accepts
+`params_ema`, `state_dict` and single-key nested archives, and strips `module.` prefixes.
+
+---
+
+## 6. Installation
 
 ```bash
 # Python 3.13
 python -m venv venv
-venv\Scripts\activate                 # Windows
+venv\Scripts\activate            # Windows
 pip install -r requirements.txt
 
-# CUDA 版 PyTorch（本机为 RTX 4060Ti 8GB，cu126 示例）
-pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# CUDA build of PyTorch (example: CUDA 12.6)
+pip install torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cu126
 ```
 
-- `requirements.txt` 已包含训练需要的 `tensorboard`（配置里 `use_tb_logger: true`）与推理需要的 `opencv_python`、`scikit-image`、`natsort`。
-- 随 NAFNet / Uformer 一起移除后，**不再需要 `timm` 与 `torch-dwconv`**，环境明显更简单。
-- `dlib` 仅在 `basicsr/utils/face_util.py` 中使用，当前流程不依赖（可选）。
-- 纯 CPU 也可跑推理（`--device cpu`），只是慢。
-
----
-
-## 3. 数据准备
-
-数据集来自 **NTIRE 2026 AI Flash Portrait**（Track 3 of the 3rd Restore Any Image Model Challenge），
-公开下载入口：<https://www.codabench.org/competitions/12885/>。
-本仓库**不分发数据**（请遵守挑战赛数据条款）。
-
-论文使用其中 600 张公开配对中的 **550 训练 / 50 验证**。期望目录结构：
-
-```
-datasets/
-├── train_550/{gt,input,mask_personmask}/     # 550 组训练
-└── val_50/{gt,input,mask_personmask}/        # 50 组验证（论文所有指标都在此划分上报告）
-
-dataset/test/{input,mask_personmask}/         # inference.py 默认输入（跑分/展示）
-result/test/                                  # inference.py 默认输出
-```
-
-- 每个样本包含：低光输入、闪光 GT、人像掩码。
-- 掩码按**文件名**配对（`input/001.jpg` ↔ `mask_personmask/001.jpg`）；缺失时回退为按顺序配对并告警，仍缺失则用全零掩码。
-- 掩码读取与训练一致：灰度化后 `mask > 0` 二值化，再由模型内部 `soft_mask = 0.9·mask + 0.1` 使用。
-- 训练侧自动把图像裁到 8 的倍数（Restormer 需多次下采样），并按 `gt_size: 256` 随机裁剪 + 几何增强。
-
----
-
-## 4. 权重
-
-本仓库**只发布主模型权重**：
-
-| 文件 | 架构 | 对应论文 | 指标（val_50） |
-|---|---|---|---|
-| `best_Restormer_LIDM.pth` | `Restormer_AIFlash_mask_attention` | Table I「Ours」/ Table II「Full」 | PSNR 31.35 / ΔE 2.77 / SSIM 0.968 / 1.54 M / 8.32 G |
-
-- 从 **Releases** 下载后放入 `best_model/best_Restormer_LIDM.pth`（目录被 `.gitignore` 忽略，需手动创建）。
-- 权重格式为 `torch.save({'params': state_dict})`，`inference.py` 会自动识别 `params` / `params_ema` / `state_dict` / 单键嵌套存档并剥离 `module.` 前缀。
-- 建议校验完整性：`Get-FileHash best_model/best_Restormer_LIDM.pth -Algorithm SHA256`（`sha256sum` on Linux）。
-- `best_model/` 下其它本地权重（其它 backbone、消融档）**不参与发布**，不会进入 git。
-
----
-
-## 5. 训练
+Run all commands **from the repository root**:
 
 ```bash
-# 必须在仓库根目录执行（basicsr 依赖当前工作目录作为包根）
-python basicsr/my_train.py -opt configs/my_aiflash.yaml
+pip install -e .                          # optional; enables `python basicsr/my_train.py ...`
+python -m basicsr.my_train -opt configs/my_aiflash.yaml     # always works
 ```
 
-论文 §IV-B 的实现细节与配置字段对应：
+`python -m ...` puts the repository root on the import path, so `import basicsr` resolves to the
+code in this repository even if another editable `basicsr` installation exists in the environment.
 
-| 论文 | 配置字段 |
+---
+
+## 7. Training
+
+```bash
+# Full paper training (300k iterations, 550 pairs) -- configs/my_aiflash.yaml
+python -m basicsr.my_train -opt configs/my_aiflash.yaml
+
+# Smoke test on one sample (20 iterations, ~25 s) -- verifies the whole chain
+python -m basicsr.my_train -opt configs/smoke_val1.yaml
+```
+
+Config fields correspond to the paper as follows:
+
+| Paper | Config field |
 |---|---|
-| AdamW, β=(0.9,0.999), wd=1e-4, lr 3e-4 → 1e-5（cosine） | `train.optim_g`、`train.scheduler` |
-| batch size 1、patch 256×256、单卡 4060Ti 8GB | `datasets.train.batch_size_per_gpu`、`gt_size` |
-| α 训练时固定为 1 | `train.alpha_sampling: false` → `alpha = 1.0` |
-| Eq.(7) λ₁=2.0 `L_rec` | `train.pixel_opt`（`CharbonnierLoss_mask`, 2） |
-| Eq.(7) λ₂=1.0 `L_input` | `train.input_recon_opt`（`CharbonnierLoss`, 1.0） |
-| Eq.(7) λ₃=1.0 `L_Lab`（λ_L=1.5, λ_ab=1.0） | `train.luminance_opt`（`FaceLabLoss`） |
-| Eq.(7) λ₄=0.001 `L_percept`（conv3_4 / conv4_4） | `train.perceptual_opt` |
-| Eq.(7) λ₅=0.2 `L_grad` | `train.grad_opt` |
-| **未被论文 Eq.(7) 列出** | `train.smooth_opt`（`TVSmoothLoss`, 0.1）——见 §7 不一致说明 |
+| AdamW, β=(0.9, 0.999), wd 1e-4, lr 3e-4 cosine-annealed | `train.optim_g`, `train.scheduler` |
+| batch size 1, 256×256 patches, single 8 GB GPU | `datasets.train.batch_size_per_gpu`, `gt_size` |
+| α = 1 during training | `train.alpha_sampling: false` |
+| λ₁ `L_rec` = 2.0 | `train.pixel_opt` (`CharbonnierLoss_mask`) |
+| λ₂ `L_input` = 1.0 | `train.input_recon_opt` (`CharbonnierLoss`) |
+| λ₃ `L_Lab` = 1.0 (λ_L 1.5, λ_ab 1.0) | `train.luminance_opt` (`FaceLabLoss`) |
+| λ₄ `L_percept` = 0.001 (conv3_4, conv4_4) | `train.perceptual_opt` |
+| λ₅ `L_grad` = 0.2 | `train.grad_opt` |
+| additional TV regularizer on `L_env` (not listed in Eq. 7) | `train.smooth_opt` (`TVSmoothLoss`, 0.1) |
 
-输出与产物：
-
-- 权重与状态：`experiments/<name>/models/`（`best_net_g_psnr.pth`、`best_net_g_deltaE.pth`、`net_g_latest.pth`、`best_metrics.json`）
-- 日志：`experiments/<name>/train_*.log`（开头即完整配置打印，便于回溯）
-- 可视化：`experiments/<name>/val_visualizations/`（R / L_env / L_flash 中间量）、loss 曲线
-- 断点续训：自动读取 `experiments/<name>/training_states/` 下最大的 `.state`
-
-> 注意：`basicsr/train.py` 不向模型传 `mask`，配 `model_type: AIFlashModel` 会 `KeyError: 'mask'`；**请统一使用 `my_train.py`**。
+Outputs: `experiments/<name>/` with `models/` (`best_net_g_psnr.pth`, `best_net_g_deltaE.pth`,
+`net_g_latest.pth`, `best_metrics.json`), `training_states/` (`.state` + loss history),
+`loss_curves/`, `visualization/`, `val_visualizations/`, and a full training log.
+TensorBoard logs go to `tb_logger/<name>/`. Training resumes automatically from the largest
+`.state` file if `experiments/<name>/training_states/` already contains one.
 
 ---
 
-## 6. 推理（含可控闪光 α）
+## 8. Evaluation (reproduces Table I, "Ours")
 
 ```bash
-# 默认：configs/my_aiflash.yaml + best_model/best_Restormer_LIDM.pth
-#       输入 dataset/test/{input,mask_personmask} → 输出 result/test/
+# expects best_model/best_Restormer_LIDM.pth and datasets/val_50/
+python -m basicsr.test -opt configs/eval_val50.yaml
+```
+
+Expected log line (measured: PSNR 31.3518 / ΔE 2.7683 / SSIM 0.9676 in 48 s):
+
+```
+INFO: Validation ValSet50,   # psnr: 31.3518   # deltaE: 2.7683   # ssim: 0.9676
+```
+
+---
+
+## 9. Inference
+
+```bash
+# default: configs/my_aiflash.yaml + best_model/best_Restormer_LIDM.pth
+#          dataset/test/{input,mask_personmask} -> result/test/
 python inference.py
 
-# 指定配置 / 权重 / 目录
 python inference.py --config configs/my_aiflash.yaml \
                     --weights best_model/best_Restormer_LIDM.pth \
                     --input_dir dataset/test/input \
                     --mask_dir dataset/test/mask_personmask \
                     --output_dir result/test
 
-# 论文 Eq.(1) 的 α：α=0 → 重建的低光图 R×L_env；α=1 → 训练设定；>1 → 更强闪光（Fig. 12）
-python inference.py --alpha 0     --output_dir result/alpha0.0
+# controllable flash strength alpha (paper Eq. 1 / Fig. 12)
+python inference.py --alpha 0     --output_dir result/alpha0.0   # ~= reconstructed low-light input
 python inference.py --alpha 0.5   --output_dir result/alpha0.5
 python inference.py --alpha 1.5   --output_dir result/alpha1.5
 python inference.py --alpha 2.0   --output_dir result/alpha2.0
 
-# 显存不足时按块推理（tile 需为 8 的倍数）
+# low-memory tiled inference (tile must be a multiple of 8)
 python inference.py --tile 512 --tile_overlap 32
 
-# 单张图片 / 强制 CPU / 指定 GPU
+# single image / CPU / specific GPU
 python inference.py --input_dir dataset/test/input/001.jpg \
                     --mask_dir dataset/test/mask_personmask/001.jpg
 python inference.py --device cpu
 python inference.py --device cuda:0
 ```
 
-| 参数 | 默认值 | 说明 |
+| Option | Default | Meaning |
 |---|---|---|
-| `--config` | `configs/my_aiflash.yaml` | 仅使用其中的 `network_g` 段构建网络 |
-| `--weights` | `best_model/best_Restormer_LIDM.pth` | 权重路径 |
-| `--input_dir` | `dataset/test/input` | 目录或单张图片 |
-| `--mask_dir` | `dataset/test/mask_personmask` | 目录或单张掩码 |
-| `--output_dir` | `result/test` | 输出目录（自动创建，输出 `.png`） |
-| `--alpha` | `1.0` | 闪光强度 α（论文 Eq.(1)） |
-| `--tile` / `--tile_overlap` | `None` / `32` | 分块推理；不设置则整图推理 |
-| `--device` | `auto` | `auto` / `cuda` / `cuda:0` / `cpu`，cuda 不可用时自动回退 |
+| `--config` | `configs/my_aiflash.yaml` | only its `network_g` section is used |
+| `--weights` | `best_model/best_Restormer_LIDM.pth` | checkpoint path |
+| `--input_dir` | `dataset/test/input` | directory or single image |
+| `--mask_dir` | `dataset/test/mask_personmask` | directory or single mask |
+| `--output_dir` | `result/test` | created automatically, PNG output |
+| `--alpha` | `1.0` | flash strength, paper Eq. (1) |
+| `--tile` / `--tile_overlap` | `None` / `32` | tiled inference; full resolution otherwise |
+| `--device` | `auto` | `auto` / `cuda` / `cuda:0` / `cpu`, falls back to CPU automatically |
 
-行为说明：图像先 pad 到 8 的倍数再推理，输出裁回原尺寸并 clamp 到 `[0,1]`；逐张打印进度与失败原因，全部失败时以退出码 `1` 结束。
+Images are padded to a multiple of 8, the output is cropped back and clamped to [0, 1]. Processing
+is logged per image; the script exits with code 1 if every image failed.
 
 ---
 
-## 7. 论文 ↔ 代码 对照
+## 10. Paper ↔ code correspondence
 
-| 论文 | 代码位置 |
+| Paper | Code |
 |---|---|
-| Eq.(1) `I = R × (L_env + α·L_flash)` | `my_restormer_arch.py` → `Restormer_AIFlash_mask_attention.forward`：`illumination = env_light_img + alpha * flash_map` |
-| Eq.(2) `L_env` 全局估计 | `EnvLightHead` + forward 中的 `0.9·σ(·)` 与上采样（**与论文描述不一致，见下**） |
-| Eq.(3) 掩码作 query 的交叉注意力 | `FlashHeadMasked.forward`：mask → Q，latent → K/V，含 `torch.sigmoid` 前的缩放 |
-| Eq.(4) 门控融合 `(1-g)⊙F + g⊙F̂` | `FlashHeadMasked` 的 `gate_conv`（两层卷积 + sigmoid 生成门） |
-| Eq.(5) `L_flash = σ(D(F')) ⊙ (γM + 1 − γ)`, γ=0.9 | `soft_mask = 0.9 * mask + 0.1`，`flash_map = flash_map * soft_mask` |
-| Eq.(6) 双重建约束 | `my_ai_flash_model.py` → `optimize_parameters`：`input_recon = R × L_env` 对齐 `srgb_to_linear(lq)`；GT 侧由 `pixel_opt` 约束 `R × (L_env + α·L_flash) ≈ I_gt` |
-| sRGB ↔ 线性 RGB | `srgb_to_linear` / `linear_to_srgb`（`my_restormer_arch.py` 末尾） |
-| Eq.(7) 损失加权 | `configs/my_aiflash.yaml` 的 `train.*_opt.loss_weight` |
-| ΔE（掩码内 CIE76） | `basicsr/metrics/psnr_ssim.py` → `calculate_deltaE(img1, img2, mask)` |
-| 损失实现 | `basicsr/models/losses/losses.py`（`FaceLabLoss` / `CharbonnierLoss_mask` / `PerceptualLoss` / `GradientLoss` / `TVSmoothLoss`） |
+| Eq. (1) `I = R × (L_env + α·L_flash)` | `Restormer_AIFlash_mask_attention.forward`: `illumination = env_light_img + alpha * flash_map` |
+| Eq. (2) environmental illumination | `EnvLightHead` + `0.9·σ(·)` and bilinear upsampling (see implementation notes) |
+| Eq. (3) mask-as-query cross-attention | `FlashHeadMasked.forward` (mask → Q, latent → K/V) |
+| Eq. (4) gated fusion `(1-g)⊙F + g⊙F̂` | `FlashHeadMasked` `gate_conv` (two conv layers + sigmoid gate) |
+| Eq. (5) `L_flash = σ(D(F')) ⊙ (γM + 1 − γ)`, γ = 0.9 | `soft_mask = 0.9 * mask + 0.1` |
+| Eq. (6) dual reconstruction constraints | `my_ai_flash_model.optimize_parameters`: `input_recon = R × L_env` vs `srgb_to_linear(lq)`; GT side enforced by `pixel_opt` |
+| Eq. (7) loss weighting | `configs/my_aiflash.yaml` → `train.*_opt.loss_weight` |
+| linear RGB processing | `srgb_to_linear` / `linear_to_srgb` |
+| ΔE (masked CIE76) | `basicsr/metrics/psnr_ssim.py: calculate_deltaE(img1, img2, mask)` |
+| loss implementations | `basicsr/models/losses/losses.py` |
 
-### ⚠️ 发布前建议先修正的三处论文—代码不一致
+**Implementation notes**
 
-1. **`L_env` 是空间图，不是全局 1×1×3。** 论文摘要、Fig. 1 caption 与 Eq.(2)（GAP + 逐通道回归）都描述为
-   全局环境光；代码中 `EnvLightHead` 输出 `(B,3,H/16,W/16)` 的空间分布图（高斯平滑），再 `0.9·σ(·)` 后**双线性上采样**到全分辨率，
-   并由额外的 `TVSmoothLoss` 约束其低频性。建议**以代码为准修改论文**（Eq.(2)、§III-B 文字、Fig. 1 caption），
-   否则读者按论文描述会无法对上代码；若要保留"全局"表述，则需重训为全局版本。
-2. **损失项数：论文 Eq.(7) 列 5 项，代码/config 有 6 项**（多出 `TVSmoothLoss`, 权重 0.1）。建议把 TV 项作为 λ₆ 写入 Eq.(7)。
-3. **训练迭代数：论文写 200,000 iterations，而发布配置是 300,000**（`total_iter`/`iters` 与 cosine 周期和一致），
-   且发布的 `best_Restormer_LIDM.pth` 内部记录名为 `net_g_latest`（即某次训练的最后一次保存）。
-   请核对发布权重实际的迭代数/选择依据，并与论文表述统一。
+- `L_env` is implemented as a **low-resolution spatial map** `(B, 3, H/16, W/16)` produced by a
+  convolutional head with Gaussian smoothing, scaled by `0.9·σ(·)` and bilinearly upsampled to the
+  output resolution; its low-frequency character is encouraged by `TVSmoothLoss` (`train.smooth_opt`).
+  Consequently the training objective contains **six** terms, while paper Eq. (7) lists five.
+- Validation and evaluation always run with `α = 1`.
+- Every config uses `use_image: false`, i.e. metrics are computed on tensors with the portrait mask
+  (this is the protocol behind the reported ΔE). The `use_image: true` branch is not supported by
+  the mask-aware metric signatures.
 
 ---
 
-## 8. 许可与引用
+## 11. Known issues
 
-- ⚠️ **仓库目前没有 LICENSE。** `basicsr/` 派生自 [BasicSR](https://github.com/XPixelGroup/BasicSR)（Apache-2.0, © Xintao Wang），
-  Apache-2.0 要求保留版权与许可声明；主模型结构参考了 Restormer。发布前请补：
-  - `LICENSE`（建议 Apache-2.0）
-  - `THIRD_PARTY_NOTICES.md`（写明 BasicSR 的来源与许可、Restormer 架构参考、NTIRE 数据集条款）
-  否则默认"保留所有权利"，与论文里 "source code ... publicly available" 的表述不匹配。
-- 引用（BibTeX，DOI 待分配）：
+1. `basicsr/train.py` does not pass the portrait mask, so it cannot train `AIFlashModel`
+   (`KeyError: 'mask'`). Use `basicsr/my_train.py`.
+2. `pad_test()` pads the low-light input but not the mask; this only matters for inputs whose
+   height/width are not multiples of 8 (the dataset already rounds sizes to multiples of 8).
+3. `basicsr/metrics/fid.py` imports a module that is not part of this repository (FID is unused).
+4. `Dataset_GaussianDenoising` contains an incorrect import path
+   (`from basicsr.utils.scandir import scandir`); the class is unused here.
+5. `python basicsr/my_train.py ...` only works after `pip install -e .`; use
+   `python -m basicsr.my_train ...` otherwise.
+6. The external comparison methods and the cross-backbone variants are intentionally not included
+   (see §1), so Tables I (other rows), III and IV (baseline columns) cannot be reproduced from this
+   repository alone.
+
+---
+
+## 12. License and citation
+
+Released under the **Apache License 2.0** (`LICENSE`). The `basicsr/` directory is derived from
+[BasicSR](https://github.com/XPixelGroup/BasicSR) (Apache-2.0, © Xintao Wang); the main model
+follows the Restormer architecture. See `THIRD_PARTY_NOTICES.md` for details.
 
 ```bibtex
 @article{wang2026dclidm,
@@ -239,25 +311,9 @@ python inference.py --device cuda:0
   author  = {Wang, Liqing and Luo, Ming Ronnier},
   journal = {IEEE Access},
   year    = {2026},
-  note    = {to appear}
+  note    = {under review}
 }
 ```
 
----
-
-## 9. 已知问题与验证状态
-
-已知问题（均不影响主模型训练/推理主流程）：
-
-1. `basicsr/__init__.py` 缺失 → `setup.py` 的 `find_packages()` 收集不到包，`pip install -e .` 无效；请**在仓库根目录运行**脚本。
-2. `basicsr/train.py` 不传 mask（请用 `my_train.py`）。
-3. `basicsr/metrics/fid.py` 引用了不存在的 `basicsr.models.archs.inception`（当前流程不使用 fid）。
-4. `Dataset_GaussianDenoising` 中 `from basicsr.utils.scandir import scandir` 路径有误（应为 `basicsr.utils`；当前流程不使用该类）。
-
-验证状态：
-
-- ✅ 全部 Python 文件通过语法编译；包内导入解析仅剩上述两处未使用路径的问题。
-- ✅ 已删除论文未使用的 RetinexMamba / SwinIR（仅出现在 Related Work），`import basicsr.models.archs` 不再中断。
-- ✅ `inference.py` 的 CLI 参数、路径解析、100 张样例图与掩码按名配对、tile 分支调用、α 透传、缺文件报错路径，均通过桩测试（stub torch 静态验证）。
-- ⚠️ **未做真实权重的前向/指标实跑**：开发环境未安装 `torch`。首次使用建议先跑
-  `python inference.py --input_dir <单张图> --device cpu`，再跑全量验证。
+If you use the NTIRE 2026 AI Flash Portrait dataset, please also cite the challenge report
+(`guan2026` in the paper's bibliography) and follow its data terms.

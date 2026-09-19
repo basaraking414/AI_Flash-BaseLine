@@ -459,43 +459,54 @@ class AIFlashModel(BaseModel):
             return 0., {}
 
     def _compute_val_losses(self):
-        """计算当前验证样本的 loss 值，返回 dict"""
+        """计算当前验证样本的 loss 值，返回 dict
+
+        test 模式（is_train=False）下不会初始化各项损失，此时用 getattr 兜底，
+        返回空 dict，保证 basicsr/test.py 也能正常跑验证/评测。
+        """
         losses = {}
         l_total = 0.0
 
-        if self.cri_pix:
-            l_pix = self.cri_pix(self.output, self.gt, self.mask)
+        cri_pix = getattr(self, 'cri_pix', None)
+        cri_illum = getattr(self, 'cri_illum', None)
+        cri_grad = getattr(self, 'cri_grad', None)
+        cri_perceptual = getattr(self, 'cri_perceptual', None)
+        cri_input_recon = getattr(self, 'cri_input_recon', None)
+        cri_smooth = getattr(self, 'cri_smooth', None)
+
+        if cri_pix:
+            l_pix = cri_pix(self.output, self.gt, self.mask)
             losses['l_pix'] = l_pix.item()
             l_total += l_pix.item()
 
-        if self.cri_illum:
-            l_illum = self.cri_illum(self.output, self.gt, self.mask)
+        if cri_illum:
+            l_illum = cri_illum(self.output, self.gt, self.mask)
             losses['l_illum'] = l_illum.item()
             l_total += l_illum.item()
 
-        if self.cri_grad:
-            l_grad = self.cri_grad(self.output, self.gt)
+        if cri_grad:
+            l_grad = cri_grad(self.output, self.gt)
             losses['l_grad'] = l_grad.item()
             l_total += l_grad.item()
 
-        if self.cri_perceptual:
-            l_percep = self.cri_perceptual(self.output, self.gt, self.mask)
+        if cri_perceptual:
+            l_percep = cri_perceptual(self.output, self.gt, self.mask)
             losses['l_percep'] = l_percep.item()
             l_total += l_percep.item()
 
-        if self.cri_input_recon and hasattr(self.net_g, '_intermediate'):
+        if cri_input_recon and hasattr(self.net_g, '_intermediate'):
             inter = self.net_g._intermediate
             input_recon = inter['reflectance'] * inter['env_light']
             input_linear = srgb_to_linear(self.lq)
-            l_input_recon = self.cri_input_recon(input_recon, input_linear)
+            l_input_recon = cri_input_recon(input_recon, input_linear)
             losses['l_input_recon'] = l_input_recon.item()
             l_total += l_input_recon.item()
 
-        if self.cri_smooth and hasattr(self.net_g, '_intermediate'):
+        if cri_smooth and hasattr(self.net_g, '_intermediate'):
             inter = self.net_g._intermediate
             env_light = inter['env_light']
             if env_light.shape[-1] > 1:
-                l_smooth = self.cri_smooth(env_light)
+                l_smooth = cri_smooth(env_light)
                 losses['l_smooth'] = l_smooth.item()
                 l_total += l_smooth.item()
 

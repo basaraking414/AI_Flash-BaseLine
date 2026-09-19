@@ -4,17 +4,30 @@ kornia==0.8.2
 lmdb==1.7.5
 matplotlib==3.10.8
 natsort==8.4.0
-numpy==2.4.3
-opencv_python==4.13.0.90
+numpy==2.3.5
+opencv-python==4.13.0.90
+pillow==12.0.0
 PyYAML==6.0.3
-Requests==2.32.5
-scipy==1.17.1
+requests==2.32.5
+scikit-image==0.26.0
+scipy==1.17.0
 setuptools==70.2.0
+tensorboard==2.20.0
 torch==2.10.0
 torchvision==0.25.0
 tqdm==4.67.1
-wandb==0.25.0
-scikit-image
-tensorboard
-# 可选：basicsr/utils/face_util.py 使用，当前训练/推理流程不依赖
-# dlib
+
+# ---------------------------------------------------------------------------
+# Complete dependency set for training + evaluation + inference.
+# Versions are the combination verified in this repository
+# (Python 3.13.11, RTX 4060 Laptop 8GB) -- see README "Verified environment".
+#
+# Install the CUDA build of PyTorch separately, e.g. for CUDA 12.6:
+#   pip install torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cu126
+# CPU-only inference also works: python inference.py --device cpu
+# (~11 s per 1024x768 image).
+#
+# Optional, not needed by the default training / evaluation / inference flow:
+#   wandb  - log syncing, only used when logger.wandb.project is set in a config
+#   dlib   - only used by basicsr/utils/face_util.py
+# ---------------------------------------------------------------------------

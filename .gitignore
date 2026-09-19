@@ -1,0 +1,78 @@
+# ==================== 数据与权重（不入库，见 README.md「权重与数据」） ====================
+# 训练数据（train_550 / val_50）与推理样例（test）
+datasets/
+dataset/
+# 最佳权重（best_model/*.pth，约 180 MB）
+best_model/
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+
+# ==================== 实验输出 ====================
+experiments/
+tb_logger/
+result/
+results/
+outputs/
+wandb/
+inference/
+paper/
+
+# ==================== Python ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv/
+
+# ==================== IDE / 工具 ====================
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ==================== 操作系统 ====================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ==================== 其他 ====================
+*.log
+*.tmp
+*.bak
+_backup_basicsr/
+.cache/
+.mypy_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml

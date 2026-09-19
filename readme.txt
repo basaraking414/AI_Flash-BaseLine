@@ -11,7 +11,8 @@ inference运行之前，需要将待处理的图像数据集，保存在dataset/
 运行 `python inference.py`，输出结果默认保存在 result/test 文件夹内（可用 --output_dir 修改）。
 跑分时，按照一致的结构放置图片文件即可。
 
-注意：本仓库不包含权重（best_model/*.pth）和数据集，请参考 README.md 的「权重与数据」一节自行放置；
-更完整的训练/推理说明同样见 README.md。
+注意：本仓库只发布论文主模型（Restormer + DC-LIDM）的代码与权重，权重（best_Restormer_LIDM.pth）
+从 Releases 下载后放入 best_model/；数据集来自 NTIRE 2026 AI Flash Portrait 挑战赛，请按其公开渠道获取。
+更完整的训练/推理说明见 README.md。
 
 

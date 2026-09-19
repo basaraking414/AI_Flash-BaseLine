@@ -24,6 +24,9 @@ AI-Flash / Restormer 推理脚本
     python inference.py --input_dir dataset/test/input/001.jpg \
                         --mask_dir dataset/test/mask_personmask/001.jpg
 
+    # 可控闪光强度 α（论文 Fig. 12）：α=0 输出重建的低光图，α=1 为训练设定，>1 更强
+    python inference.py --alpha 0.5 --output_dir result/alpha0.5
+
     # 强制使用 CPU
     python inference.py --device cpu
 """
@@ -61,6 +64,9 @@ def parse_args():
                         help='Overlap between tiles')
     parser.add_argument('--device', type=str, default='auto',
                         help="Device to use: 'auto', 'cuda', 'cuda:0' or 'cpu'")
+    parser.add_argument('--alpha', type=float, default=1.0,
+                        help='Flash intensity control alpha: 0 returns the reconstructed '
+                             'low-light input, 1 is the training setting, >1 gives stronger flash')
     return parser.parse_args()
 
 
@@ -233,12 +239,13 @@ def pad_to_multiple(img_tensor, multiple=8):
     return img_tensor, h, w
 
 
-def inference_full(model, input_tensor, mask_tensor):
+def inference_full(model, input_tensor, mask_tensor, alpha=1.0):
     """全图推理"""
-    return model(input_tensor, mask_tensor)
+    return model(input_tensor, mask_tensor, alpha)
 
 
-def inference_tile(model, input_tensor, mask_tensor, tile_size, tile_overlap):
+def inference_tile(model, input_tensor, mask_tensor, tile_size, tile_overlap,
+                   alpha=1.0):
     """
     分块推理（用于处理大图，显存不足时使用）
     """
@@ -259,7 +266,7 @@ def inference_tile(model, input_tensor, mask_tensor, tile_size, tile_overlap):
         for w_idx in w_idx_list:
             in_patch = input_tensor[..., h_idx:h_idx + tile, w_idx:w_idx + tile]
             mask_patch = mask_tensor[..., h_idx:h_idx + tile, w_idx:w_idx + tile]
-            out_patch = model(in_patch, mask_patch)
+            out_patch = model(in_patch, mask_patch, alpha)
 
             # 处理可能的 list 输出
             if isinstance(out_patch, list):
@@ -276,7 +283,7 @@ def inference_tile(model, input_tensor, mask_tensor, tile_size, tile_overlap):
 
 @torch.no_grad()
 def process_image(model, img_path, mask_path, output_dir, device,
-                  tile_size=None, tile_overlap=32):
+                  tile_size=None, tile_overlap=32, alpha=1.0):
     """处理单张图像"""
     img = load_img(img_path)
     h, w = img.shape[:2]
@@ -299,9 +306,10 @@ def process_image(model, img_path, mask_path, output_dir, device,
     mask_padded, _, _ = pad_to_multiple(mask_tensor, multiple=8)
 
     if tile_size is None:
-        output = inference_full(model, input_padded, mask_padded)
+        output = inference_full(model, input_padded, mask_padded, alpha)
     else:
-        output = inference_tile(model, input_padded, mask_padded, tile_size, tile_overlap)
+        output = inference_tile(model, input_padded, mask_padded, tile_size,
+                                tile_overlap, alpha)
 
     # 处理可能的 list 输出
     if isinstance(output, list):
@@ -362,6 +370,7 @@ def main():
     print(f'Output directory: {args.output_dir}')
 
     # 推理设置
+    print(f'Flash intensity alpha = {args.alpha}')
     if args.tile:
         print(f'Using tile mode: tile_size={args.tile}, overlap={args.tile_overlap}')
     else:
@@ -388,7 +397,8 @@ def main():
                 output_dir=args.output_dir,
                 device=device,
                 tile_size=args.tile,
-                tile_overlap=args.tile_overlap
+                tile_overlap=args.tile_overlap,
+                alpha=args.alpha
             )
             done += 1
             print(f'[{done}/{len(image_files)}] {os.path.basename(img_path)} -> {output_path}')
